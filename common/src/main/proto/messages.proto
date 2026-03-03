@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+option java_package = "ist.group29.depchain.network";
+option java_outer_classname = "NetworkMessages";
+
+// Root envelope — travels through all link layers (FLL -> SL -> APL).
+message Message {
+    string sender_id    = 1;  // Process ID of the sender
+    int64 sequence_number = 2;  // Per-link monotonic counter (-1 for handshakes)
+
+    oneof payload {
+        Handshake    handshake     = 3;
+        HandshakeAck handshake_ack = 4;
+        DataMessage  data          = 5;
+        AckMessage   ack           = 6;
+    }
+}
+
+// DH key-exchange initiation, authenticated with RSA identity key.
+message Handshake {
+    bytes dh_public_key = 1;  // Encoded ECDH public key
+    bytes signature     = 2;  // RSA sign(sender_id | recipient_id | dh_public_key)
+}
+
+// DH key-exchange response, authenticated with RSA identity key.
+message HandshakeAck {
+    bytes dh_public_key = 1;  // Encoded ECDH public key
+    bytes signature     = 2;  // RSA sign(sender_id | recipient_id | dh_public_key)
+}
+
+// Application payload with HMAC integrity.
+message DataMessage {
+    bytes payload = 1;  // Opaque application data
+    bytes mac     = 2;  // HMAC(session_key, sender_id | recipient_id | seq | payload)
+}
+
+// Acknowledgment with HMAC integrity.
+message AckMessage {
+    bytes mac = 1;  // HMAC(session_key, sender_id | recipient_id | seq)
+}
