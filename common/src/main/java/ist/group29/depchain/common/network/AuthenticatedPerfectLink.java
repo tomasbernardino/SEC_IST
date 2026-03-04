@@ -1,18 +1,25 @@
-package ist.group29.depchain.network;
+package ist.group29.depchain.common.network;
+
+import java.security.GeneralSecurityException;
+import java.security.KeyPair;
+import java.security.PublicKey;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+import javax.crypto.SecretKey;
 
 import com.google.protobuf.ByteString;
-import ist.group29.depchain.crypto.CryptoUtils;
+
+import ist.group29.depchain.common.crypto.CryptoUtils;
 import ist.group29.depchain.network.NetworkMessages.AckMessage;
 import ist.group29.depchain.network.NetworkMessages.DataMessage;
 import ist.group29.depchain.network.NetworkMessages.Handshake;
 import ist.group29.depchain.network.NetworkMessages.HandshakeAck;
 import ist.group29.depchain.network.NetworkMessages.Message;
-import java.security.*;
-import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-import javax.crypto.SecretKey;
 
 /**
  * Authenticated Perfect Link (APL) — one instance per peer.

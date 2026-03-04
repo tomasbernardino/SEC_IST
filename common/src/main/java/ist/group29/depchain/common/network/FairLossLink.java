@@ -1,7 +1,9 @@
-package ist.group29.depchain.network;
+package ist.group29.depchain.common.network;
 
 import java.io.IOException;
-import java.net.*;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.SocketException;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.logging.Level;

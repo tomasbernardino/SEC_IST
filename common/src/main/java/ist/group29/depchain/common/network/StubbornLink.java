@@ -1,6 +1,10 @@
-package ist.group29.depchain.network;
+package ist.group29.depchain.common.network;
 
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 import ist.group29.depchain.network.NetworkMessages.Message;

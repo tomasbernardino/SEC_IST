@@ -1,4 +1,4 @@
-package ist.group29.depchain.network;
+package ist.group29.depchain.common.network;
 
 import java.net.InetAddress;
 
