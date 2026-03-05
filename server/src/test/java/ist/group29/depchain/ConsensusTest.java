@@ -1,29 +1,32 @@
 package ist.group29.depchain;
 
-import com.google.protobuf.ByteString;
-import ist.group29.depchain.server.consensus.Consensus;
-import ist.group29.depchain.server.consensus.HotStuffNode;
-import ist.group29.depchain.server.consensus.QuorumCertificate;
-import ist.group29.depchain.common.network.LinkManager;
-import ist.group29.depchain.network.NetworkMessages;
-import ist.group29.depchain.network.NetworkMessages.ConsensusMessage;
-import ist.group29.depchain.network.NetworkMessages.VoteMessage;
-import ist.group29.depchain.network.NetworkMessages.NewViewMessage;
-import ist.group29.depchain.network.NetworkMessages.PrepareMessage;
-import ist.group29.depchain.server.service.Service;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.*;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import com.google.protobuf.ByteString;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
+import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.common.network.LinkManager;
+import ist.group29.depchain.network.ConsensusMessages;
+import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
+import ist.group29.depchain.network.ConsensusMessages.NewViewMessage;
+import ist.group29.depchain.network.ConsensusMessages.PrepareMessage;
+import ist.group29.depchain.network.ConsensusMessages.VoteMessage;
+import ist.group29.depchain.server.consensus.Consensus;
+import ist.group29.depchain.server.consensus.HotStuffNode;
+import ist.group29.depchain.server.consensus.QuorumCertificate;
+import ist.group29.depchain.server.service.Service;
 
 /**
  * Unit tests for the Basic HotStuff consensus engine.
@@ -97,11 +100,11 @@ class ConsensusTest {
         @Test
         void testSafeNodeSafetyRuleRejectsConflict() {
                 // Simulate having lockedQC at view 2 on some specific node hash
-                byte[] lockedNodeHash = HotStuffNode.computeHash(new byte[32], "original-cmd", 1);
-                byte[] conflictingParentHash = HotStuffNode.computeHash(new byte[32], "other-chain", 1);
+                byte[] lockedNodeHash = CryptoUtils.computeHash(new byte[32], "original-cmd", 1);
+                byte[] conflictingParentHash = CryptoUtils.computeHash(new byte[32], "other-chain", 1);
 
                 // Build a QC that locked the replica on view 2
-                NetworkMessages.QuorumCertificate lockedQcProto = NetworkMessages.QuorumCertificate.newBuilder()
+                ConsensusMessages.QuorumCertificate lockedQcProto = ConsensusMessages.QuorumCertificate.newBuilder()
                                 .setType(QuorumCertificate.PRE_COMMIT)
                                 .setViewNumber(2)
                                 .setNodeHash(ByteString.copyFrom(lockedNodeHash))
@@ -109,13 +112,13 @@ class ConsensusTest {
 
                 // A conflicting node: parent_hash does NOT match the locked node hash
                 HotStuffNode conflictingNode = new HotStuffNode(
-                                NetworkMessages.HotStuffNode.newBuilder()
+                                ConsensusMessages.HotStuffNode.newBuilder()
                                                 .setParentHash(ByteString.copyFrom(conflictingParentHash)) // different
                                                                                                            // chain!
                                                 .setCommand("conflicting-cmd")
                                                 .setViewNumber(3)
                                                 .setNodeHash(ByteString.copyFrom(
-                                                                HotStuffNode.computeHash(conflictingParentHash,
+                                                                CryptoUtils.computeHash(conflictingParentHash,
                                                                                 "conflicting-cmd", 3)))
                                                 .build());
 
@@ -321,6 +324,6 @@ class ConsensusTest {
         private byte[] computeViewNodeHash(String command, int view) {
                 // Genesis node_hash is the parent
                 byte[] genesisHash = HotStuffNode.genesis().getNodeHash();
-                return HotStuffNode.computeHash(genesisHash, command, view);
+                return CryptoUtils.computeHash(genesisHash, command, view);
         }
 }

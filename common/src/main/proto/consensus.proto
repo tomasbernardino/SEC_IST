@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+option java_package = "ist.group29.depchain.network";
+option java_outer_classname = "ConsensusMessages";
+
+// A node in the HotStuff command tree (a block in the blockchain).
+// Each node wraps one client command and links back to its parent via a hash
+// digest, forming an append-only tree of proposals.
+message HotStuffNode {
+    bytes  parent_hash = 1;  // SHA-256(parent HotStuffNode bytes)
+    string command     = 2;  // The client command (a string to append, Stage 1)
+    uint32 view_number = 3;  // View in which this node was proposed
+    bytes  node_hash   = 4;  // SHA-256(parent_hash | command | view_number)
+}
+
+// A Quorum Certificate (QC) over the tuple <type, view_number, node_hash>.
+// Represents the collective agreement of (n-f) replicas on a specific protocol phase.
+//
+// Step 3 approach: bundles (n-f) individual HMAC-based partial signatures.
+// Step 5 upgrade:  replaces with a single tcombine() threshold signature.
+message QuorumCertificate {
+    string         type        = 1;  // "prepare", "pre-commit", or "commit"
+    uint32         view_number = 2;  // View in which this QC was formed
+    bytes          node_hash   = 3;  // Identifies the node this QC certifies
+    repeated bytes signatures  = 4;  // One HMAC per voter (Step 3); one threshold sig (Step 5)
+    repeated string voter_ids  = 5;  // Parallel list of signer IDs for verification
+}
+
+// HotStuff sub-messages (one per phase)
+
+// Sent by every replica when entering a new view.
+// Carries its highest locally-seen prepareQC so the leader can determine the
+// safe branch (Algorithm 2, lines 3-4).
+message NewViewMessage {
+    QuorumCertificate prepare_qc = 1;
+}
+
+// Broadcast by the leader to propose a new command branch (Algorithm 2, lines 5-6).
+// high_qc justifies why the proposed node extends from a safe branch.
+message PrepareMessage {
+    HotStuffNode      node    = 1;
+    QuorumCertificate high_qc = 2;
+}
+
+// A signed vote cast by a replica in the prepare, pre-commit, or commit phases.
+// The 'phase' field disambiguates which voting round this belongs to.
+// partial_sig = HMAC(session_key, phase | view_number | node_hash)  — Step 3 approach.
+message VoteMessage {
+    string phase       = 1;  // "prepare", "pre-commit", or "commit"
+    uint32 view_number = 2;
+    bytes  node_hash   = 3;
+    bytes  partial_sig = 4;  // HMAC-based partial signature (Step 3 approach)
+    string sender_id   = 5;
+}
+
+// Broadcast by the leader after collecting (n-f) prepare votes (Algorithm 2, line 14).
+// Replicas update their prepareQC upon receiving this.
+message PreCommitMessage {
+    QuorumCertificate prepare_qc = 1;
+}
+
+// Broadcast by the leader after collecting (n-f) pre-commit votes (Algorithm 2, line 22).
+// Replicas set their lockedQC <- precommitQC upon receiving this (line 25).
+message CommitMessage {
+    QuorumCertificate precommit_qc = 1;
+}
+
+// Broadcast by the leader after collecting (n-f) commit votes (Algorithm 2, line 30).
+// The commitQC is irrevocable proof of consensus. Replicas execute the command.
+message DecideMessage {
+    QuorumCertificate commit_qc = 1;
+}
+
+// Top-level consensus envelope serialized into DataMessage.payload.
+// Parsed by Consensus.java; the network layer treats it as opaque bytes.
+message ConsensusMessage {
+    string sender_id   = 1;
+    uint32 view_number = 2;
+    oneof type {
+        NewViewMessage   new_view   = 3;
+        PrepareMessage   prepare    = 4;
+        VoteMessage      vote       = 5;
+        PreCommitMessage pre_commit = 6;
+        CommitMessage    commit     = 7;
+        DecideMessage    decide     = 8;
+    }
+}

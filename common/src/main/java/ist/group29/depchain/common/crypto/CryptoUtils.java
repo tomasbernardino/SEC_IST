@@ -7,6 +7,7 @@ import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
@@ -108,6 +109,24 @@ public final class CryptoUtils {
         return MessageDigest.isEqual(computed, expected);
     }
 
+    // ======================== Hashing ========================
+    /**
+     * Compute SHA-256(parent_hash || command_utf8 || view_number_big_endian_4_bytes).
+     * Deterministic and collision-resistant
+     */
+    public static byte[] computeHash(byte[] parentHash, String command, int viewNumber) {
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            sha.update(parentHash);
+            sha.update(command.getBytes(StandardCharsets.UTF_8));
+            sha.update(ByteBuffer.allocate(4).putInt(viewNumber).array());
+            return sha.digest();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
+    }
+
+
     // ======================== Encoding Helpers ========================
 
     public static byte[] toBytes(String s) {
@@ -117,4 +136,15 @@ public final class CryptoUtils {
     public static byte[] toBytes(long v) {
         return ByteBuffer.allocate(Long.BYTES).putLong(v).array();
     }
+
+    public static String bytesToHex(byte[] b, int maxBytes) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(b.length, maxBytes); i++) {
+            sb.append(String.format("%02x", b[i]));
+        }
+        if (b.length > maxBytes)
+            sb.append("...");
+        return sb.toString();
+    }
+
 }

@@ -1,13 +1,11 @@
 package ist.group29.depchain.server.consensus;
 
-import com.google.protobuf.ByteString;
-import ist.group29.depchain.network.NetworkMessages;
-
-import java.nio.ByteBuffer;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
-import java.nio.charset.StandardCharsets;
+
+import com.google.protobuf.ByteString;
+
+import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.network.ConsensusMessages;
 
 /**
  * Thin Java wrapper around the Protobuf of HotStuffNode.
@@ -31,18 +29,18 @@ public class HotStuffNode {
     static {
         byte[] zeroHash = new byte[32]; // 32 zero bytes for genesis parent hash
         GENESIS = new HotStuffNode(
-                NetworkMessages.HotStuffNode.newBuilder()
+                ConsensusMessages.HotStuffNode.newBuilder()
                         .setParentHash(ByteString.copyFrom(zeroHash))
                         .setCommand("")
                         .setViewNumber(0)
-                        .setNodeHash(ByteString.copyFrom(computeHash(zeroHash, "", 0)))
+                        .setNodeHash(ByteString.copyFrom(CryptoUtils.computeHash(zeroHash, "", 0)))
                         .build());
     }
 
-    private final NetworkMessages.HotStuffNode proto;
+    private final ConsensusMessages.HotStuffNode proto;
 
     /** Wrap an existing Protobuf HotStuffNode. */
-    public HotStuffNode(NetworkMessages.HotStuffNode proto) {
+    public HotStuffNode(ConsensusMessages.HotStuffNode proto) {
         this.proto = proto;
     }
 
@@ -61,8 +59,8 @@ public class HotStuffNode {
      */
     public HotStuffNode createChild(String command, int viewNumber) {
         byte[] parentHash = proto.getNodeHash().toByteArray();
-        byte[] nodeHash = computeHash(parentHash, command, viewNumber);
-        NetworkMessages.HotStuffNode child = NetworkMessages.HotStuffNode.newBuilder()
+        byte[] nodeHash = CryptoUtils.computeHash(parentHash, command, viewNumber);
+        ConsensusMessages.HotStuffNode child = ConsensusMessages.HotStuffNode.newBuilder()
                 .setParentHash(ByteString.copyFrom(parentHash))
                 .setCommand(command)
                 .setViewNumber(viewNumber)
@@ -105,7 +103,7 @@ public class HotStuffNode {
     }
 
     /** Serialise to Protobuf for inclusion in network messages. */
-    public NetworkMessages.HotStuffNode getProto() {
+    public ConsensusMessages.HotStuffNode getProto() {
         return proto;
     }
 
@@ -124,38 +122,11 @@ public class HotStuffNode {
         return proto.getViewNumber();
     }
 
-    // Internal hashing
-
-    /**
-     * Compute SHA-256(parent_hash || command_utf8 || view_number_big_endian_4_bytes).
-     * Deterministic and collision-resistant
-     */
-    public static byte[] computeHash(byte[] parentHash, String command, int viewNumber) {
-        try {
-            MessageDigest sha = MessageDigest.getInstance("SHA-256");
-            sha.update(parentHash);
-            sha.update(command.getBytes(StandardCharsets.UTF_8));
-            sha.update(ByteBuffer.allocate(4).putInt(viewNumber).array());
-            return sha.digest();
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
-    }
-
     @Override
     public String toString() {
         return "HotStuffNode{view=" + proto.getViewNumber()
                 + ", cmd='" + proto.getCommand() + "'"
-                + ", hash=" + bytesToHex(proto.getNodeHash().toByteArray(), 4) + "}";
+                + ", hash=" + CryptoUtils.bytesToHex(proto.getNodeHash().toByteArray(), 4) + "}";
     }
 
-    private static String bytesToHex(byte[] b, int maxBytes) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < Math.min(b.length, maxBytes); i++) {
-            sb.append(String.format("%02x", b[i]));
-        }
-        if (b.length > maxBytes)
-            sb.append("...");
-        return sb.toString();
-    }
 }

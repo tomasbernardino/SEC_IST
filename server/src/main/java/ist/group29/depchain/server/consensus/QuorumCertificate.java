@@ -1,12 +1,13 @@
 package ist.group29.depchain.server.consensus;
 
-import com.google.protobuf.ByteString;
-import ist.group29.depchain.network.NetworkMessages;
-
 import java.util.List;
 
+import com.google.protobuf.ByteString;
+
+import ist.group29.depchain.network.ConsensusMessages;
+
 /**
- * Thin Java wrapper around the Protobuf NetworkMessages.QuorumCertificate.
+ * Thin Java wrapper around the Protobuf ConsensusMessages.QuorumCertificate.
  *
  * A Quorum Certificate (QC) is the central data structure in HotStuff.
  * The paper defines it as:
@@ -38,17 +39,17 @@ public class QuorumCertificate {
 
     static {
         GENESIS_QC = new QuorumCertificate(
-                NetworkMessages.QuorumCertificate.newBuilder()
+                ConsensusMessages.QuorumCertificate.newBuilder()
                         .setType(PREPARE)
                         .setViewNumber(0)
                         .setNodeHash(ByteString.copyFrom(new byte[32]))
                         .build());
     }
 
-    private final NetworkMessages.QuorumCertificate proto;
+    private final ConsensusMessages.QuorumCertificate proto;
 
     /** Wrap an existing Protobuf QuorumCertificate. */
-    public QuorumCertificate(NetworkMessages.QuorumCertificate proto) {
+    public QuorumCertificate(ConsensusMessages.QuorumCertificate proto) {
         this.proto = proto;
     }
 
@@ -64,7 +65,7 @@ public class QuorumCertificate {
      */
     public static QuorumCertificate create(String type, int viewNumber, byte[] nodeHash,
             List<byte[]> sigs, List<String> voterIds) {
-        NetworkMessages.QuorumCertificate.Builder b = NetworkMessages.QuorumCertificate.newBuilder()
+        ConsensusMessages.QuorumCertificate.Builder b = ConsensusMessages.QuorumCertificate.newBuilder()
                 .setType(type)
                 .setViewNumber(viewNumber)
                 .setNodeHash(ByteString.copyFrom(nodeHash));
@@ -118,7 +119,7 @@ public class QuorumCertificate {
     }
 
     /** Raw Protobuf message (for serialisation into ConsensusMessage). */
-    public NetworkMessages.QuorumCertificate getProto() {
+    public ConsensusMessages.QuorumCertificate getProto() {
         return proto;
     }
 

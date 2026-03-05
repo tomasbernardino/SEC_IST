@@ -5,14 +5,14 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import ist.group29.depchain.common.network.MessageListener;
 import java.nio.ByteBuffer;
 import ist.group29.depchain.common.network.LinkManager;
-import ist.group29.depchain.network.NetworkMessages;
-import ist.group29.depchain.network.NetworkMessages.ConsensusMessage;
-import ist.group29.depchain.network.NetworkMessages.VoteMessage;
-import ist.group29.depchain.network.NetworkMessages.NewViewMessage;
-import ist.group29.depchain.network.NetworkMessages.PrepareMessage;
-import ist.group29.depchain.network.NetworkMessages.PreCommitMessage;
-import ist.group29.depchain.network.NetworkMessages.CommitMessage;
-import ist.group29.depchain.network.NetworkMessages.DecideMessage;
+import ist.group29.depchain.network.ConsensusMessages;
+import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
+import ist.group29.depchain.network.ConsensusMessages.VoteMessage;
+import ist.group29.depchain.network.ConsensusMessages.NewViewMessage;
+import ist.group29.depchain.network.ConsensusMessages.PrepareMessage;
+import ist.group29.depchain.network.ConsensusMessages.PreCommitMessage;
+import ist.group29.depchain.network.ConsensusMessages.CommitMessage;
+import ist.group29.depchain.network.ConsensusMessages.DecideMessage;
 import ist.group29.depchain.common.crypto.CryptoUtils;
 
 import javax.crypto.SecretKey;
@@ -240,7 +240,7 @@ public class Consensus implements MessageListener {
         // For Step 3, the command is hardcoded as a placeholder; in Step 6
         // this will be taken from the pending client-request queue.
         HotStuffNode parentNode = new HotStuffNode(
-                NetworkMessages.HotStuffNode.newBuilder()
+                ConsensusMessages.HotStuffNode.newBuilder()
                         .setNodeHash(ByteString.copyFrom(highQC.getNodeHash()))
                         .build());
         String command = "cmd-view-" + targetView; // placeholder for Step 3
