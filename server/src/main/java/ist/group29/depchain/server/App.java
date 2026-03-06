@@ -10,18 +10,20 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
 import java.util.concurrent.atomic.AtomicReference;
+
 /**
  *
  * Standard usage:
- *   App <nodeId> <hostsConfigPath> <keysDir> <password>
+ * App <nodeId> <hostsConfigPath> <keysDir> <password>
  *
- *   Example:
- *     App node-0 hosts.config keys sec_project_keys
+ * Example:
+ * App node-0 hosts.config keys sec_project_keys
  *
  * Key pre-distribution: For Stage 1, each node generates a
  * fresh RSA key pair on startup. In a real deployment the PKI would be set up
  * offline and the public keys loaded from a trusted directory. The project
- * description states: "blockchain members should use self-generated public/private
+ * description states: "blockchain members should use self-generated
+ * public/private
  * keys, which are pre-distributed before the start of the system."
  * In Stage 1 we approximate this with in-process key exchange for testing.
  *
@@ -38,10 +40,10 @@ public class App {
             System.exit(1);
         }
 
-        String selfId      = args[0];
-        Path configPath    = Path.of(args[1]);
-        Path keysDir       = Path.of(args[2]);
-        char[] password    = args[3].toCharArray();
+        String selfId = args[0];
+        Path configPath = Path.of(args[1]);
+        Path keysDir = Path.of(args[2]);
+        char[] password = args[3].toCharArray();
 
         // Load configuration (Network + Keys) from disk
         LOG.info("[App] Loading configuration for " + selfId + "...");
@@ -54,7 +56,8 @@ public class App {
         List<String> allNodeIds = new ArrayList<>(config.peers().keySet());
         allNodeIds.add(selfId);
 
-        // AtomicReference to handle the circular dependency between LinkManager and Consensus
+        // AtomicReference to handle the circular dependency between LinkManager and
+        // Consensus
         final AtomicReference<Consensus> consensusRef = new AtomicReference<>();
 
         // Network layer
@@ -63,17 +66,18 @@ public class App {
                 config.identityKeyPair(), config.peerPublicKeys(),
                 (senderId, payload) -> {
                     Consensus c = consensusRef.get();
-                    if (c != null) c.onMessage(senderId, payload);
+                    if (c != null)
+                        c.onMessage(senderId, payload);
                 });
 
         // Consensus layer
-        Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service);
+        Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service, keysDir.toString());
         consensusRef.set(consensus);
 
         linkManager.start();
 
         LOG.info("[App] Node " + selfId + " started on " + config.self().address() + ":" + config.self().port()
-                 + " with " + config.peers().size() + " peers.");
+                + " with " + config.peers().size() + " peers.");
 
         // Give APL handshakes time to complete
         Thread.sleep(2000);

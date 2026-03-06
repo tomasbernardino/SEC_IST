@@ -11,9 +11,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import ist.group29.depchain.server.crypto.CryptoManager;
+import com.weavechain.curve25519.EdwardsPoint;
+import com.weavechain.curve25519.Scalar;
 import com.google.protobuf.ByteString;
 
 import ist.group29.depchain.common.crypto.CryptoUtils;
@@ -54,14 +62,25 @@ class ConsensusTest {
         @Mock
         LinkManager mockLinkManager;
 
+        @Mock
+        CryptoManager mockCrypto;
+
         Service service;
         Consensus consensus;
 
         @BeforeEach
-        void setup() {
+        void setup() throws Exception {
                 service = new Service();
-                // Use node-0 as ourselves - it is the leader for view 1
-                consensus = new Consensus("node-0", NODE_IDS, mockLinkManager, service);
+                // Setup default mock behavior for CryptoManager
+                lenient().when(mockCrypto.getThresholdPublicKey()).thenReturn(new byte[32]);
+                lenient().when(mockCrypto.computeRs(anyString())).thenReturn(mock(Scalar.class));
+                lenient().when(mockCrypto.computeRiPoint(any())).thenReturn(mock(EdwardsPoint.class));
+                lenient().when(mockCrypto.aggregateRi(anyList())).thenReturn(mock(EdwardsPoint.class));
+                lenient().when(mockCrypto.computeChallengeK(any(), anyString())).thenReturn(mock(Scalar.class));
+                lenient().when(mockCrypto.computeSignatureShare(any(), any(), any())).thenReturn(mock(Scalar.class));
+                lenient().when(mockCrypto.aggregateSignatureShares(any(), anyList())).thenReturn(new byte[64]);
+
+                consensus = new Consensus("node-0", NODE_IDS, mockLinkManager, service, mockCrypto);
         }
 
         // Test 1: Leader rotation
@@ -100,15 +119,10 @@ class ConsensusTest {
         @Test
         void testSafeNodeSafetyRuleRejectsConflict() {
                 // Simulate having lockedQC at view 2 on some specific node hash
-                byte[] lockedNodeHash = CryptoUtils.computeHash(new byte[32], "original-cmd", 1);
                 byte[] conflictingParentHash = CryptoUtils.computeHash(new byte[32], "other-chain", 1);
 
                 // Build a QC that locked the replica on view 2
-                ConsensusMessages.QuorumCertificate lockedQcProto = ConsensusMessages.QuorumCertificate.newBuilder()
-                                .setType(QuorumCertificate.PRE_COMMIT)
-                                .setViewNumber(2)
-                                .setNodeHash(ByteString.copyFrom(lockedNodeHash))
-                                .build();
+                // (Variable lockedQcProto was unused and removed)
 
                 // A conflicting node: parent_hash does NOT match the locked node hash
                 HotStuffNode conflictingNode = new HotStuffNode(
@@ -123,9 +137,9 @@ class ConsensusTest {
                                                 .build());
 
                 // A QC with the SAME view as the lockedQC - liveness rule = FALSE
+                // We use a dummy 64-byte signature to satisfy the isValid length check
                 QuorumCertificate staleJustify = QuorumCertificate.create(
-                                QuorumCertificate.PREPARE, 2, conflictingParentHash,
-                                List.of(new byte[0]), List.of("node-1"));
+                                QuorumCertificate.PREPARE, 2, conflictingParentHash, new byte[64]);
 
                 // Directly invoking safeNode via a PREPARE message: feed it through onMessage
                 // The replica (Consensus) should NOT emit a VOTE because safeNode fails
@@ -217,7 +231,7 @@ class ConsensusTest {
                         }
                 };
 
-                Consensus leader = new Consensus("node-0", NODE_IDS, mockLinkManager, trackingService);
+                Consensus leader = new Consensus("node-0", NODE_IDS, mockLinkManager, trackingService, mockCrypto);
 
                 // --- Step 1: Feed n-f NEW-VIEW messages from three different peers
                 // (node-0 injects its own synthetic NEW-VIEW in start(); we feed 2 more)
@@ -227,24 +241,33 @@ class ConsensusTest {
                 feedNewView(leader, "node-2", 1);
                 // This triggers the leader to broadcast PREPARE
 
-                // --- Step 2: Feed n-f PREPARE votes
-                // Leader auto-votes for itself in onPrepare; feed 2 more
-                feedVote(leader, "node-1", QuorumCertificate.PREPARE, 1,
-                                computeViewNodeHash("cmd-view-1", 1));
-                feedVote(leader, "node-2", QuorumCertificate.PREPARE, 1,
-                                computeViewNodeHash("cmd-view-1", 1));
+                // --- Step 2: Feed n-f PREPARE votes (Round 1: Ri points)
+                byte[] nodeHash = computeViewNodeHash("cmd-view-1", 1);
+                // In mocked test, we need to feed BOTH peers and the leader's own self-vote
+                feedVoteR1(leader, "node-0", QuorumCertificate.PREPARE, 1, nodeHash);
+                feedVoteR1(leader, "node-1", QuorumCertificate.PREPARE, 1, nodeHash);
+                feedVoteR1(leader, "node-2", QuorumCertificate.PREPARE, 1, nodeHash);
 
-                // --- Step 3: Feed n-f PRE-COMMIT votes
-                feedVote(leader, "node-1", QuorumCertificate.PRE_COMMIT, 1,
-                                computeViewNodeHash("cmd-view-1", 1));
-                feedVote(leader, "node-2", QuorumCertificate.PRE_COMMIT, 1,
-                                computeViewNodeHash("cmd-view-1", 1));
+                // --- Step 2b: Feed n-f PREPARE votes (Round 2: shares)
+                feedVoteR2(leader, "node-0", QuorumCertificate.PREPARE, 1, nodeHash);
+                feedVoteR2(leader, "node-1", QuorumCertificate.PREPARE, 1, nodeHash);
+                feedVoteR2(leader, "node-2", QuorumCertificate.PREPARE, 1, nodeHash);
 
-                // --- Step 4: Feed n-f COMMIT votes
-                feedVote(leader, "node-1", QuorumCertificate.COMMIT, 1,
-                                computeViewNodeHash("cmd-view-1", 1));
-                feedVote(leader, "node-2", QuorumCertificate.COMMIT, 1,
-                                computeViewNodeHash("cmd-view-1", 1));
+                // --- Step 3: Feed n-f PRE-COMMIT votes (Round 1 + Round 2)
+                feedVoteR1(leader, "node-0", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
+                feedVoteR1(leader, "node-1", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
+                feedVoteR1(leader, "node-2", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
+                feedVoteR2(leader, "node-0", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
+                feedVoteR2(leader, "node-1", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
+                feedVoteR2(leader, "node-2", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
+
+                // --- Step 4: Feed n-f COMMIT votes (Round 1 + Round 2)
+                feedVoteR1(leader, "node-0", QuorumCertificate.COMMIT, 1, nodeHash);
+                feedVoteR1(leader, "node-1", QuorumCertificate.COMMIT, 1, nodeHash);
+                feedVoteR1(leader, "node-2", QuorumCertificate.COMMIT, 1, nodeHash);
+                feedVoteR2(leader, "node-0", QuorumCertificate.COMMIT, 1, nodeHash);
+                feedVoteR2(leader, "node-1", QuorumCertificate.COMMIT, 1, nodeHash);
+                feedVoteR2(leader, "node-2", QuorumCertificate.COMMIT, 1, nodeHash);
 
                 // Wait for the decide upcall (max 5 s)
                 boolean decided = decideLatch.await(5, TimeUnit.SECONDS);
@@ -305,7 +328,10 @@ class ConsensusTest {
                 c.onMessage(fromId, msg.toByteArray());
         }
 
-        private void feedVote(Consensus c, String fromId, String phase, int view, byte[] nodeHash) {
+        private void feedVoteR1(Consensus c, String fromId, String phase, int view, byte[] nodeHash) {
+                // In a real run, this would contain a real R_i point.
+                // For the mock, we just need a non-empty ByteString to trigger isRound1.
+                byte[] dummyRi = new byte[32];
                 ConsensusMessage msg = ConsensusMessage.newBuilder()
                                 .setSenderId(fromId)
                                 .setViewNumber(view)
@@ -314,7 +340,25 @@ class ConsensusTest {
                                                 .setPhase(phase)
                                                 .setViewNumber(view)
                                                 .setNodeHash(ByteString.copyFrom(nodeHash))
-                                                .setPartialSig(ByteString.copyFrom(new byte[0]))
+                                                .setRPoint(ByteString.copyFrom(dummyRi))
+                                                .build())
+                                .build();
+                c.onMessage(fromId, msg.toByteArray());
+        }
+
+        private void feedVoteR2(Consensus c, String fromId, String phase, int view, byte[] nodeHash) {
+                // In a real run, this would contain a real signature share.
+                // For the mock, we just need a non-empty ByteString to trigger isRound2.
+                byte[] dummyShare = new byte[32];
+                ConsensusMessage msg = ConsensusMessage.newBuilder()
+                                .setSenderId(fromId)
+                                .setViewNumber(view)
+                                .setVote(VoteMessage.newBuilder()
+                                                .setSenderId(fromId)
+                                                .setPhase(phase)
+                                                .setViewNumber(view)
+                                                .setNodeHash(ByteString.copyFrom(nodeHash))
+                                                .setScalarSignature(ByteString.copyFrom(dummyShare))
                                                 .build())
                                 .build();
                 c.onMessage(fromId, msg.toByteArray());

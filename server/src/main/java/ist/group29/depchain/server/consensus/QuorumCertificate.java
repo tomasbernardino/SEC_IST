@@ -1,10 +1,10 @@
 package ist.group29.depchain.server.consensus;
 
-import java.util.List;
-
 import com.google.protobuf.ByteString;
-
 import ist.group29.depchain.network.ConsensusMessages;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Thin Java wrapper around the Protobuf ConsensusMessages.QuorumCertificate.
@@ -14,13 +14,6 @@ import ist.group29.depchain.network.ConsensusMessages;
  * A collection of (n-f) votes over a tuple <type, viewNumber, node>.
  * The tcombine utility employs a threshold signature scheme to generate a
  * representation of (n-f) signed votes as a single authenticator.
- *
- * Step 3 approach (no threshold signatures yet):
- * Instead of a real threshold signature (tcombine/tverify), the QC stores
- * a list of individual HMAC partial signatures - one per voter - alongside
- * a parallel list of voter IDs. Validity is checked simply by counting:
- * if signatures.size() >= n - f, the QC is accepted.
- * This is intentionally simplified for Step 3's "no security guarantees" scope.
  *
  * Step 5 upgrade path:
  * Replace repeated bytes signatures with a single combined
@@ -55,52 +48,63 @@ public class QuorumCertificate {
 
     /**
      * Construct a QC from its component parts (used by the leader after
-     * accumulating enough votes to call the paper's QC(V) function).
-     *
-     * @param type       phase type constant (e.g. PREPARE)
-     * @param viewNumber the current view
-     * @param nodeHash   hash of the proposed node being certified
-     * @param sigs       list of individual HMAC partial signatures (Step 3)
-     * @param voterIds   parallel list of IDs of the signing replicas
+     * accumulating (n-f) shares and generating the combined signature).
      */
-    public static QuorumCertificate create(String type, int viewNumber, byte[] nodeHash,
-            List<byte[]> sigs, List<String> voterIds) {
+    public static QuorumCertificate create(String type, int viewNumber, byte[] nodeHash, byte[] thresholdSignature) {
         ConsensusMessages.QuorumCertificate.Builder b = ConsensusMessages.QuorumCertificate.newBuilder()
                 .setType(type)
                 .setViewNumber(viewNumber)
                 .setNodeHash(ByteString.copyFrom(nodeHash));
-        for (byte[] sig : sigs)
-            b.addSignatures(ByteString.copyFrom(sig));
-        for (String id : voterIds)
-            b.addVoterIds(id);
+
+        if (thresholdSignature != null) {
+            b.setThresholdSignature(ByteString.copyFrom(thresholdSignature));
+        }
+
         return new QuorumCertificate(b.build());
     }
 
     /**
      * The genesis QC representing the initial ⊥ state.
-     *
-     * In Algorithm 2, both lockedQC and prepareQC start as ⊥.
-     * Using a well-defined genesis object instead of null avoids
-     * NullPointerExceptions and simplifies the safeNode predicate:
-     * any node extends from the genesis node's (zero) hash, so view 1 always
-     * passes the safety rule.
      */
     public static QuorumCertificate genesisQC() {
         return GENESIS_QC;
     }
 
     /**
-     * Check validity of this QC for a given quorum size.
-     *
-     * Step 3: A QC is valid iff it carries at least
-     * quorumSize signatures. No cryptographic verification is
-     * performed (added in Step 5).
-     *
-     * @param quorumSize the required quorum = n - f
-     * @return true if this QC has at least quorumSize votes
+     * Reconstruct the byte array that was signed.
      */
-    public boolean isValid(int quorumSize) {
-        return proto.getSignaturesCount() >= quorumSize;
+    public byte[] getMessageToSign() {
+        byte[] phaseBytes = proto.getType().getBytes(StandardCharsets.UTF_8);
+        byte[] viewBytes = ByteBuffer.allocate(4).putInt(proto.getViewNumber()).array();
+        byte[] nodeHash = proto.getNodeHash().toByteArray();
+
+        byte[] msg = new byte[phaseBytes.length + viewBytes.length + nodeHash.length];
+        System.arraycopy(phaseBytes, 0, msg, 0, phaseBytes.length);
+        System.arraycopy(viewBytes, 0, msg, phaseBytes.length, viewBytes.length);
+        System.arraycopy(nodeHash, 0, msg, phaseBytes.length + viewBytes.length, nodeHash.length);
+        return msg;
+    }
+
+    /**
+     * Check validity of this QC using ThresholdSignatures.
+     */
+    public boolean isValid(byte[] thresholdPublicKey) {
+        if (proto.getThresholdSignature().isEmpty())
+            return false;
+
+        // Genesis QC is always valid
+        if (proto.getViewNumber() == 0)
+            return true;
+
+        try {
+            return com.weavechain.sig.ThresholdSigEd25519.verify(
+                    thresholdPublicKey,
+                    proto.getThresholdSignature().toByteArray(),
+                    getMessageToSign());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
     }
 
     /** Phase type ("prepare", "pre-commit", or "commit"). */
@@ -127,6 +131,6 @@ public class QuorumCertificate {
     public String toString() {
         return "QC{type=" + proto.getType()
                 + ", view=" + proto.getViewNumber()
-                + ", votes=" + proto.getSignaturesCount() + "}";
+                + ", hasSig=" + !proto.getThresholdSignature().isEmpty() + "}";
     }
 }
