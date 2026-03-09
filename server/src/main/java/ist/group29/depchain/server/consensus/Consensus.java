@@ -82,6 +82,15 @@ public class Consensus implements MessageListener {
     private CryptoManager cryptoManager;
     private final Map<Integer, Map<String, Scalar>> rsMemory = new ConcurrentHashMap<>();
 
+    // Local block store: maps nodeHash -> HotStuffNode for recursive extendsFrom
+    // chain traversal. Required by the safeNode predicate (Algorithm 1, line 26)
+    // to walk backwards through the hash chain when verifying ancestry under BFT.
+    // NOTE: The Service's blockchain (List<String>) cannot be used here because it
+    // only stores decided command strings, not HotStuffNode objects, and
+    // extendsFrom
+    // needs access to in-flight proposals that haven't been decided yet.
+    private final Map<ByteString, HotStuffNode> blockStore = new ConcurrentHashMap<>();
+
     // Algorithm 2 bookkeeping
 
     private volatile int curView = 1;
@@ -89,8 +98,11 @@ public class Consensus implements MessageListener {
     private QuorumCertificate prepareQC = QuorumCertificate.genesisQC();
 
     // The Vote Accumulator is the "waiting room" for votes that the leader uses to
-    // reach a quorum.
-    private final Map<Integer, Map<String, List<VoteMessage>>> voteAccumulator = new ConcurrentHashMap<>();
+    // reach a quorum. Keyed by: view -> mapKey (phase+round) -> senderId ->
+    // VoteMessage.
+    // Using senderId as key prevents quorum stuffing (duplicate votes from same
+    // sender).
+    private final Map<Integer, Map<String, Map<String, VoteMessage>>> voteAccumulator = new ConcurrentHashMap<>();
 
     // The leader collects n-f new views before starting the PREPARE phase.
     private final Map<Integer, Map<String, NewViewMessage>> newViewAccumulator = new ConcurrentHashMap<>();
@@ -110,6 +122,9 @@ public class Consensus implements MessageListener {
 
     private ScheduledFuture<?> viewTimer = null;
     private long timeoutMs = INITIAL_TIMEOUT_MS;
+    // --- State variables for anti-equivocation and idempotency ---
+    private int lastVotedPrepareView = 0;
+    private int highestDecidedView = 0;
 
     // Constructor
 
@@ -138,6 +153,11 @@ public class Consensus implements MessageListener {
         this.linkManager = linkManager;
         this.decideListener = decideListener;
         this.cryptoManager = cryptoManager;
+
+        // Seed the block store with the genesis node so extendsFrom can always
+        // trace the hash chain back to the root of the command tree.
+        HotStuffNode genesis = HotStuffNode.genesis();
+        blockStore.put(ByteString.copyFrom(genesis.getNodeHash()), genesis);
     }
 
     private static CryptoManager createDefaultCrypto(String selfId, String keysDir) {
@@ -151,11 +171,6 @@ public class Consensus implements MessageListener {
     public CryptoManager getCryptoManager() {
         return cryptoManager;
     }
-
-    /**
-     * Provide the HMAC signing key once the APL session is established.
-     * This key is used to produce the partial signatures in VoteMessage.
-     */
 
     // Entry point
 
@@ -173,15 +188,6 @@ public class Consensus implements MessageListener {
         LOG.info("[Consensus] Starting view " + curView + " - leader is " + leader(curView));
         sendNewView(curView);
         resetTimer();
-
-        if (isLeader(curView)) {
-            // Inject a synthetic NEW-VIEW from ourselves into the accumulator
-            // (we count our own contribution so we only need n-f-1 from peers)
-            storeNewView(selfId, curView - 1, NewViewMessage.newBuilder()
-                    .setPrepareQc(prepareQC.getProto())
-                    .build());
-            this.currentProposal = null; // will be set when we build the leaf
-        }
     }
 
     // MessageListener - entry point from LinkManager
@@ -209,7 +215,7 @@ public class Consensus implements MessageListener {
             }
 
             switch (msg.getTypeCase()) {
-                case NEW_VIEW -> onNewView(senderId, msg.getNewView(), msgView + 1);
+                case NEW_VIEW -> onNewView(senderId, msg.getNewView(), msgView);
                 case PREPARE -> onPrepare(senderId, msg.getPrepare(), msgView);
                 case VOTE -> onVote(senderId, msg.getVote(), msgView);
                 case PRE_COMMIT -> onPreCommit(senderId, msg.getPreCommit(), msgView);
@@ -249,7 +255,7 @@ public class Consensus implements MessageListener {
         // highQC = argmax{m.justify.viewNumber} among n-f NEW-VIEW messages
         QuorumCertificate highQC = QuorumCertificate.genesisQC();
         for (NewViewMessage nv : received.values()) {
-            QuorumCertificate qc = new QuorumCertificate(nv.getPrepareQc());
+            QuorumCertificate qc = new QuorumCertificate(nv.getJustify());
             if (qc.getViewNumber() > highQC.getViewNumber()) {
                 highQC = qc;
             }
@@ -262,16 +268,16 @@ public class Consensus implements MessageListener {
                         .setNodeHash(ByteString.copyFrom(highQC.getNodeHash()))
                         .build());
         String command = "cmd-view-" + targetView; // placeholder for Step 3
-        currentProposal = parentNode.createChild(command, targetView);
+        currentProposal = parentNode.createLeaf(command, targetView);
+        blockStore.put(ByteString.copyFrom(currentProposal.getNodeHash()), currentProposal);
         LOG.info("[Consensus] Leader view " + targetView + " - proposing: " + currentProposal);
 
         // broadcast Msg(prepare, curProposal, highQC)
         ConsensusMessage prepare = ConsensusMessage.newBuilder()
-                .setSenderId(selfId)
                 .setViewNumber(targetView)
                 .setPrepare(PrepareMessage.newBuilder()
                         .setNode(currentProposal.getProto())
-                        .setHighQc(highQC.getProto())
+                        .setJustify(highQC.getProto())
                         .build())
                 .build();
 
@@ -287,21 +293,43 @@ public class Consensus implements MessageListener {
      * then sends a PREPARE vote to the leader.
      */
     private synchronized void onPrepare(String senderId, PrepareMessage msg, int view) {
-        if (view != curView)
+        if (view != curView) {
             return;
-        if (!senderId.equals(leader(view)) && !senderId.equals(selfId))
+        }
+        if (!senderId.equals(leader(view))) {
             return;
+        }
 
         HotStuffNode proposedNode = new HotStuffNode(msg.getNode());
-        QuorumCertificate justify = new QuorumCertificate(msg.getHighQc());
+        QuorumCertificate justify = new QuorumCertificate(msg.getJustify());
 
-        // Reject if the proposal is not safe (safety + liveness check)
+        // Anti-Equivocation Guard (Step 5 fix): A replica must never accept two
+        // different proposals in the same view. If we already voted in this view,
+        // reject subsequent proposals.
+        if (view <= lastVotedPrepareView) {
+            System.out.println("DEBUG onPrepare: Equivocation view <= lastVotedPrepareView (" + view + " <= "
+                    + lastVotedPrepareView + ")");
+            LOG.warning("[Consensus] Equivocation detected! Leader sent multiple PREPAREs for view " + view);
+            return;
+        }
+
+        if (!Arrays.equals(proposedNode.getProto().getParentHash().toByteArray(),
+                justify.getNodeHash())) {
+            LOG.warning("[Consensus] PREPARE rejected: node does not extend from justify QC in view " + view);
+            return;
+        }
+
+        // Paper (Algorithm 1, line 26): "... AND safeNode(m.node, m.justify)"
         if (!safeNode(proposedNode, justify)) {
             LOG.warning("[Consensus] PREPARE rejected by safeNode in view " + view);
             return;
         }
 
+        // Store the accepted block in our local block store for future
+        // extendsFrom chain traversals.
+        blockStore.put(ByteString.copyFrom(proposedNode.getNodeHash()), proposedNode);
         currentProposal = proposedNode;
+        lastVotedPrepareView = view;
         LOG.info("[Consensus] Accepted PREPARE in view " + view + " for: " + proposedNode);
 
         // Send vote to leader
@@ -331,10 +359,10 @@ public class Consensus implements MessageListener {
 
         voteAccumulator
                 .computeIfAbsent(view, v -> new ConcurrentHashMap<>())
-                .computeIfAbsent(mapKey, p -> new ArrayList<>())
-                .add(vote);
+                .computeIfAbsent(mapKey, p -> new ConcurrentHashMap<>())
+                .put(senderId, vote);
 
-        List<VoteMessage> votes = voteAccumulator.get(view).get(mapKey);
+        Map<String, VoteMessage> votes = voteAccumulator.get(view).get(mapKey);
         LOG.info("[Consensus] Vote from " + senderId + " for phase=" + phase + " R1=" + isRound1 + " R2=" + isRound2
                 + " count=" + votes.size() + "/" + quorum);
         if (votes.size() < quorum)
@@ -350,17 +378,17 @@ public class Consensus implements MessageListener {
                         + " view=" + view);
                 List<EdwardsPoint> ris = new ArrayList<>();
                 List<Integer> participants = new ArrayList<>();
-                for (int i = 0; i < quorum; i++) {
-                    VoteMessage v = votes.get(i);
+                for (Map.Entry<String, VoteMessage> entry : votes.entrySet()) {
+                    VoteMessage v = entry.getValue();
                     ris.add(new CompressedEdwardsY(v.getRPoint().toByteArray()).decompress());
-                    int pIndex = Integer.parseInt(v.getSenderId().split("-")[1]);
+                    // Use authenticated senderId (map key) to find their positional index
+                    int pIndex = sortedNodeIds.indexOf(entry.getKey());
                     participants.add(pIndex);
                 }
                 EdwardsPoint R = cryptoManager.aggregateRi(ris);
                 Scalar k = cryptoManager.computeChallengeK(R, toSignStr);
 
                 ConsensusMessage challengeMsg = ConsensusMessage.newBuilder()
-                        .setSenderId(selfId)
                         .setViewNumber(view)
                         .setChallenge(ChallengeMessage.newBuilder()
                                 .setPhase(phase)
@@ -379,16 +407,16 @@ public class Consensus implements MessageListener {
                 LOG.info("[Consensus] Leader formed QC for phase=" + phase + " view=" + view);
 
                 // Reconstruct R from the R1 accumulator to combine signatures
-                List<VoteMessage> r1Votes = voteAccumulator.get(view).get(phase + "-R1");
+                Map<String, VoteMessage> r1Votes = voteAccumulator.get(view).get(phase + "-R1");
                 List<EdwardsPoint> ris = new ArrayList<>();
-                for (int i = 0; i < quorum; i++) {
-                    ris.add(new CompressedEdwardsY(r1Votes.get(i).getRPoint().toByteArray()).decompress());
+                for (VoteMessage r1v : r1Votes.values()) {
+                    ris.add(new CompressedEdwardsY(r1v.getRPoint().toByteArray()).decompress());
                 }
                 EdwardsPoint R = cryptoManager.aggregateRi(ris);
 
                 List<Scalar> shares = new ArrayList<>();
-                for (int i = 0; i < quorum; i++) {
-                    shares.add(Scalar.fromBits(votes.get(i).getScalarSignature().toByteArray()));
+                for (VoteMessage r2v : votes.values()) {
+                    shares.add(Scalar.fromBits(r2v.getScalarSignature().toByteArray()));
                 }
 
                 byte[] combinedSig = cryptoManager.aggregateSignatureShares(R, shares);
@@ -399,27 +427,27 @@ public class Consensus implements MessageListener {
                     case QuorumCertificate.PREPARE -> {
                         prepareQC = qc;
                         ConsensusMessage preCommit = ConsensusMessage.newBuilder()
-                                .setSenderId(selfId).setViewNumber(view)
+                                .setViewNumber(view)
                                 .setPreCommit(PreCommitMessage.newBuilder()
-                                        .setPrepareQc(qc.getProto()).build())
+                                        .setJustify(qc.getProto()).build())
                                 .build();
                         linkManager.broadcast(preCommit.toByteArray());
                         onPreCommit(selfId, preCommit.getPreCommit(), view);
                     }
                     case QuorumCertificate.PRE_COMMIT -> {
                         ConsensusMessage commit = ConsensusMessage.newBuilder()
-                                .setSenderId(selfId).setViewNumber(view)
+                                .setViewNumber(view)
                                 .setCommit(CommitMessage.newBuilder()
-                                        .setPrecommitQc(qc.getProto()).build())
+                                        .setJustify(qc.getProto()).build())
                                 .build();
                         linkManager.broadcast(commit.toByteArray());
                         onCommit(selfId, commit.getCommit(), view);
                     }
                     case QuorumCertificate.COMMIT -> {
                         ConsensusMessage decide = ConsensusMessage.newBuilder()
-                                .setSenderId(selfId).setViewNumber(view)
+                                .setViewNumber(view)
                                 .setDecide(DecideMessage.newBuilder()
-                                        .setCommitQc(qc.getProto()).build())
+                                        .setJustify(qc.getProto()).build())
                                 .build();
                         linkManager.broadcast(decide.toByteArray());
                         onDecide(selfId, decide.getDecide(), view);
@@ -449,18 +477,15 @@ public class Consensus implements MessageListener {
             // Generate scalar signature share
             Scalar si = cryptoManager.computeSignatureShare(rs, k, participants);
 
-            VoteMessage vote = VoteMessage.newBuilder()
+            VoteMessage voteR2 = VoteMessage.newBuilder()
                     .setPhase(phase)
-                    .setViewNumber(view)
                     .setNodeHash(challenge.getNodeHash())
                     .setScalarSignature(ByteString.copyFrom(si.toByteArray()))
-                    .setSenderId(selfId)
                     .build();
 
             ConsensusMessage msg = ConsensusMessage.newBuilder()
-                    .setSenderId(selfId)
                     .setViewNumber(view)
-                    .setVote(vote)
+                    .setVote(voteR2)
                     .build();
 
             String currentLeader = leader(view);
@@ -480,14 +505,19 @@ public class Consensus implements MessageListener {
     private synchronized void onPreCommit(String senderId, PreCommitMessage msg, int view) {
         if (view != curView)
             return;
-        if (!senderId.equals(leader(view)) && !senderId.equals(selfId))
+        if (!senderId.equals(leader(view)))
             return;
         if (currentProposal == null)
             return;
 
-        QuorumCertificate qc = new QuorumCertificate(msg.getPrepareQc());
+        QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
         if (!qc.isValid(cryptoManager.getThresholdPublicKey())) {
             LOG.warning("[Consensus] PRE-COMMIT has invalid QC in view " + view);
+            return;
+        }
+        // QC-Swap prevention: PRE-COMMIT must carry a PREPARE QC
+        if (!QuorumCertificate.PREPARE.equals(qc.getType())) {
+            LOG.warning("[Consensus] PRE-COMMIT rejected: expected PREPARE QC but got " + qc.getType());
             return;
         }
 
@@ -502,14 +532,19 @@ public class Consensus implements MessageListener {
     private synchronized void onCommit(String senderId, CommitMessage msg, int view) {
         if (view != curView)
             return;
-        if (!senderId.equals(leader(view)) && !senderId.equals(selfId))
+        if (!senderId.equals(leader(view)))
             return;
         if (currentProposal == null)
             return;
 
-        QuorumCertificate qc = new QuorumCertificate(msg.getPrecommitQc());
+        QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
         if (!qc.isValid(cryptoManager.getThresholdPublicKey())) {
             LOG.warning("[Consensus] COMMIT has invalid QC in view " + view);
+            return;
+        }
+        // QC-Swap prevention: COMMIT must carry a PRE_COMMIT QC
+        if (!QuorumCertificate.PRE_COMMIT.equals(qc.getType())) {
+            LOG.warning("[Consensus] COMMIT rejected: expected PRE_COMMIT QC but got " + qc.getType());
             return;
         }
 
@@ -522,45 +557,129 @@ public class Consensus implements MessageListener {
      * Handle an incoming DECIDE message.
      */
     private synchronized void onDecide(String senderId, DecideMessage msg, int view) {
-        if (view != curView)
+        if (view != curView) {
             return;
-        if (!senderId.equals(leader(view)) && !senderId.equals(selfId))
+        }
+        if (!senderId.equals(leader(view))) {
             return;
-        if (currentProposal == null)
-            return;
-
-        if (!new QuorumCertificate(msg.getCommitQc()).isValid(cryptoManager.getThresholdPublicKey())) {
-            LOG.warning("[Consensus] DECIDE has invalid QC in view " + view);
+        }
+        if (currentProposal == null) {
             return;
         }
 
+        QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
+        if (!qc.isValid(cryptoManager.getThresholdPublicKey())) {
+            LOG.warning("[Consensus] DECIDE has invalid QC in view " + view);
+            return;
+        }
+        // QC-Swap prevention: DECIDE must carry a COMMIT QC
+        if (!QuorumCertificate.COMMIT.equals(qc.getType())) {
+            LOG.warning("[Consensus] DECIDE rejected: expected COMMIT QC but got " + qc.getType());
+            return;
+        }
+
+        // Duplicate Execution Guard (Step 5 fix): Enforce strict idempotency
+        // at the consensus layer to prevent double execution on rapid DECIDE spams.
+        if (view <= highestDecidedView) {
+            LOG.warning("[Consensus] Duplicate DECIDE for already decided view " + view);
+            return;
+        }
+        highestDecidedView = view;
+
         LOG.info("[Consensus] DECIDED view " + view + " - command: " + currentProposal.getCommand());
         cancelTimer();
+        // Reset timeout to initial value on successful decide — the exponential
+        // backoff from onTimeout should not permanently degrade latency after
+        // the system recovers from transient faults.
+        timeoutMs = INITIAL_TIMEOUT_MS;
         decideListener.onDecide(currentProposal.getCommand(), view);
         advanceView();
     }
 
+    /**
+     * Paper: safeNode(node, qc) := (node extends from lockedQC.node) \/
+     * (qc.viewNumber > lockedQC.viewNumber)
+     *
+     * Safety rule: the proposed node must be on the same branch as the locked
+     * block.
+     * Liveness rule: if the justify QC is fresher than lockedQC, accept anyway
+     * (prevents deadlock when replicas are locked on stale branches).
+     */
     private boolean safeNode(HotStuffNode node, QuorumCertificate qc) {
-        boolean isGenesis = Arrays.equals(lockedQC.getNodeHash(), new byte[32]);
-        boolean safetyRule = isGenesis
-                || Arrays.equals(node.getProto().getParentHash().toByteArray(), lockedQC.getNodeHash());
+        // Safety rule: node extends from lockedQC.node (recursive chain walk)
+        boolean safetyRule = extendsFrom(node, lockedQC.getNodeHash());
+        // Liveness rule: qc.viewNumber > lockedQC.viewNumber
         boolean livenessRule = qc.getViewNumber() > lockedQC.getViewNumber();
         LOG.fine("[Consensus] safeNode: safety=" + safetyRule + " liveness=" + livenessRule);
         return safetyRule || livenessRule;
+    }
+
+    /**
+     * Store a block in the local block store.
+     * Used internally when accepting proposals, and exposed for testing.
+     */
+    public void storeBlock(HotStuffNode node) {
+        blockStore.put(ByteString.copyFrom(node.getNodeHash()), node);
+    }
+
+    /**
+     * Check whether {@code node} is a descendant of the block identified by
+     * {@code ancestorHash} by walking the blockStore hash chain backwards.
+     *
+     * Special case: if ancestorHash is all-zeros (the genesis QC's nodeHash,
+     * representing ⊥), returns true immediately since every block extends from
+     * the initial empty state.
+     *
+     * @param node         the node to check
+     * @param ancestorHash the hash of the ancestor block to look for
+     * @return true if node is equal to, or a descendant of, the ancestor
+     */
+    public boolean extendsFrom(HotStuffNode node, byte[] ancestorHash) {
+        // Everything extends from genesis, matching the paper's initial state.
+        if (Arrays.equals(ancestorHash, HotStuffNode.genesis().getNodeHash())) {
+            return true;
+        }
+
+        if (Arrays.equals(node.getNodeHash(), ancestorHash)) {
+            return true;
+        }
+
+        // Walk backwards through the blockStore following parent_hash links.
+        // We start from the node's parent hash since the node itself might not be in
+        // the store yet!
+        byte[] currentHash = node.getProto().getParentHash().toByteArray();
+        for (int depth = 0; depth < 1000; depth++) { // depth limit prevents infinite loops
+            if (Arrays.equals(currentHash, ancestorHash)) {
+                return true;
+            }
+
+            HotStuffNode current = blockStore.get(ByteString.copyFrom(currentHash));
+            if (current == null) {
+                return false; // block not in store, ancestry not provable
+            }
+
+            currentHash = current.getProto().getParentHash().toByteArray();
+        }
+
+        return false;
     }
 
     private void advanceView() {
         curView++;
         currentProposal = null;
         LOG.info("[Consensus] Advancing to view " + curView + " - leader: " + leader(curView));
+
+        // Clean up old accumulator entries to prevent unbounded memory growth.
+        // Use a 5-view window as a safety margin for late-arriving messages.
+        int staleThreshold = curView - 5;
+        if (staleThreshold > 0) {
+            voteAccumulator.keySet().removeIf(v -> v < staleThreshold);
+            newViewAccumulator.keySet().removeIf(v -> v < staleThreshold);
+            rsMemory.keySet().removeIf(v -> v < staleThreshold);
+        }
+
         sendNewView(curView);
         resetTimer();
-
-        if (isLeader(curView)) {
-            storeNewView(selfId, curView - 1, NewViewMessage.newBuilder()
-                    .setPrepareQc(prepareQC.getProto())
-                    .build());
-        }
     }
 
     private synchronized void onTimeout() {
@@ -592,10 +711,9 @@ public class Consensus implements MessageListener {
     private void sendNewView(int targetView) {
         String nextLeader = leader(targetView);
         ConsensusMessage msg = ConsensusMessage.newBuilder()
-                .setSenderId(selfId)
-                .setViewNumber(targetView - 1)
+                .setViewNumber(targetView)
                 .setNewView(NewViewMessage.newBuilder()
-                        .setPrepareQc(prepareQC.getProto())
+                        .setJustify(prepareQC.getProto())
                         .build())
                 .build();
         if (nextLeader.equals(selfId)) {
@@ -616,14 +734,11 @@ public class Consensus implements MessageListener {
 
             VoteMessage vote = VoteMessage.newBuilder()
                     .setPhase(phase)
-                    .setViewNumber(view)
                     .setNodeHash(ByteString.copyFrom(nodeHash))
                     .setRPoint(ByteString.copyFrom(rPoint.compress().toByteArray()))
-                    .setSenderId(selfId)
                     .build();
 
             ConsensusMessage msg = ConsensusMessage.newBuilder()
-                    .setSenderId(selfId)
                     .setViewNumber(view)
                     .setVote(vote)
                     .build();

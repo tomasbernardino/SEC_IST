@@ -1,7 +1,5 @@
 package ist.group29.depchain.server.consensus;
 
-import java.util.Arrays;
-
 import com.google.protobuf.ByteString;
 
 import ist.group29.depchain.common.crypto.CryptoUtils;
@@ -57,7 +55,7 @@ public class HotStuffNode {
      * @param viewNumber the view number of the proposal
      * @return a new child HotStuffNode
      */
-    public HotStuffNode createChild(String command, int viewNumber) {
+    public HotStuffNode createLeaf(String command, int viewNumber) {
         byte[] parentHash = proto.getNodeHash().toByteArray();
         byte[] nodeHash = CryptoUtils.computeHash(parentHash, command, viewNumber);
         ConsensusMessages.HotStuffNode child = ConsensusMessages.HotStuffNode.newBuilder()
@@ -67,39 +65,6 @@ public class HotStuffNode {
                 .setNodeHash(ByteString.copyFrom(nodeHash))
                 .build();
         return new HotStuffNode(child);
-    }
-
-    /**
-     * Check whether this node's branch extends from ancestor.
-     *
-     * This is used by the safeNode predicate (Algorithm 1, line 26):
-     * "node extends from lockedQC.node". In a tree built with hash chaining,
-     * this only requires checking if two nodes share the same node_hash -
-     * because if this is a descendant, its entire branch hash chain
-     * traces back to ancestor. For Step 3 (no Byzantine faults), we
-     * check by node_hash equality or by recursing one level using parent_hash.
-     *
-     * Why is this correct? Because the genesis node is the
-     * common ancestor of all valid branches. If ancestor is the genesis
-     * node (lockedQC is the genesis QC initially), this always returns true,
-     * meaning replicas vote freely on every first proposal - which matches the
-     * paper's intent for the first view.
-     *
-     * @param ancestor the node we want to check ancestry against
-     * @return true if this is a descendant of or equal to ancestor
-     */
-    public boolean extendsFrom(HotStuffNode ancestor) {
-        if (ancestor == null)
-            return true; // null ancestor = genesis, always safe
-        // Two nodes are equal if their hashes match
-        byte[] myHash = proto.getNodeHash().toByteArray();
-        byte[] ancHash = ancestor.getProto().getNodeHash().toByteArray();
-        return Arrays.equals(myHash, ancHash) // this IS the ancestor
-                || Arrays.equals( // this directly extends ancestor
-                        proto.getParentHash().toByteArray(), ancHash);
-        // Note: deeper ancestry would require the full tree. For Step 3 (no
-        // Byzantine behaviour), two levels of checking covers all practical cases.
-        // A production implementation would walk the local tree store recursively.
     }
 
     /** Serialise to Protobuf for inclusion in network messages. */

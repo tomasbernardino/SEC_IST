@@ -35,7 +35,7 @@ public class QuorumCertificate {
                 ConsensusMessages.QuorumCertificate.newBuilder()
                         .setType(PREPARE)
                         .setViewNumber(0)
-                        .setNodeHash(ByteString.copyFrom(new byte[32]))
+                        .setNodeHash(ByteString.copyFrom(HotStuffNode.genesis().getNodeHash()))
                         .build());
     }
 
