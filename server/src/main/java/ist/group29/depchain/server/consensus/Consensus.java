@@ -12,6 +12,8 @@ import ist.group29.depchain.network.ConsensusMessages.PrepareMessage;
 import ist.group29.depchain.network.ConsensusMessages.PreCommitMessage;
 import ist.group29.depchain.network.ConsensusMessages.CommitMessage;
 import ist.group29.depchain.network.ConsensusMessages.DecideMessage;
+import ist.group29.depchain.network.ConsensusMessages.SyncRequest;
+import ist.group29.depchain.network.ConsensusMessages.SyncResponse;
 import com.weavechain.curve25519.CompressedEdwardsY;
 import com.weavechain.curve25519.EdwardsPoint;
 import com.weavechain.curve25519.Scalar;
@@ -97,12 +99,16 @@ public class Consensus implements MessageListener {
     private QuorumCertificate lockedQC = QuorumCertificate.genesisQC();
     private QuorumCertificate prepareQC = QuorumCertificate.genesisQC();
 
+    // Composite key for the vote accumulator: groups votes by (view, phase+round).
+    private record PhaseRound(int view, String phase) {
+    }
+
     // The Vote Accumulator is the "waiting room" for votes that the leader uses to
-    // reach a quorum. Keyed by: view -> mapKey (phase+round) -> senderId ->
+    // reach a quorum. Keyed by: PhaseRound(view, phase+round) -> senderId ->
     // VoteMessage.
     // Using senderId as key prevents quorum stuffing (duplicate votes from same
     // sender).
-    private final Map<Integer, Map<String, Map<String, VoteMessage>>> voteAccumulator = new ConcurrentHashMap<>();
+    private final Map<PhaseRound, Map<String, VoteMessage>> voteAccumulator = new ConcurrentHashMap<>();
 
     // The leader collects n-f new views before starting the PREPARE phase.
     private final Map<Integer, Map<String, NewViewMessage>> newViewAccumulator = new ConcurrentHashMap<>();
@@ -122,9 +128,19 @@ public class Consensus implements MessageListener {
 
     private ScheduledFuture<?> viewTimer = null;
     private long timeoutMs = INITIAL_TIMEOUT_MS;
-    // --- State variables for anti-equivocation and idempotency ---
+    // --- State variables for anti-equivocation ---
     private int lastVotedPrepareView = 0;
-    private int highestDecidedView = 0;
+
+    // --- State for incremental branch execution (paper Section 4.2) ---
+    // Tracks the highest node whose branch has been fully executed.
+    private ByteString lastExecutedNodeHash = ByteString.copyFrom(HotStuffNode.genesis().getNodeHash());
+
+    // --- State for branch catch-up (paper Section 4.2) ---
+    // Buffers a PREPARE message while waiting for a sync response.
+    private record PendingPrepare(String senderId, PrepareMessage msg, int view) {
+    }
+
+    private volatile PendingPrepare pendingPrepare = null;
 
     // Constructor
 
@@ -222,6 +238,8 @@ public class Consensus implements MessageListener {
                 case COMMIT -> onCommit(senderId, msg.getCommit(), msgView);
                 case DECIDE -> onDecide(senderId, msg.getDecide(), msgView);
                 case CHALLENGE -> onChallenge(senderId, msg.getChallenge(), msgView);
+                case SYNC_REQUEST -> onSyncRequest(senderId, msg.getSyncRequest());
+                case SYNC_RESPONSE -> onSyncResponse(senderId, msg.getSyncResponse());
                 default -> LOG.warning("[Consensus] Unknown message type from " + senderId);
             }
         } catch (InvalidProtocolBufferException e) {
@@ -319,6 +337,20 @@ public class Consensus implements MessageListener {
             return;
         }
 
+        // Branch catch-up (paper Section 4.2): if the justify QC references
+        // a block not in our blockStore, request it before proceeding.
+        // Without the missing block(s), safeNode can't reliably verify ancestry
+        // and incremental execution can't walk the full chain.
+        if (!blockStore.containsKey(ByteString.copyFrom(justify.getNodeHash()))
+                && !Arrays.equals(justify.getNodeHash(), HotStuffNode.genesis().getNodeHash())) {
+            LOG.info("[Consensus] Missing blocks — requesting sync from " + senderId
+                    + " for hash " + ist.group29.depchain.common.crypto.CryptoUtils.bytesToHex(
+                            justify.getNodeHash(), 4));
+            requestSync(senderId, justify.getNodeHash());
+            pendingPrepare = new PendingPrepare(senderId, msg, view);
+            return;
+        }
+
         // Paper (Algorithm 1, line 26): "... AND safeNode(m.node, m.justify)"
         if (!safeNode(proposedNode, justify)) {
             LOG.warning("[Consensus] PREPARE rejected by safeNode in view " + view);
@@ -357,12 +389,12 @@ public class Consensus implements MessageListener {
 
         String mapKey = phase + (isRound1 ? "-R1" : "-R2");
 
+        PhaseRound key = new PhaseRound(view, mapKey);
         voteAccumulator
-                .computeIfAbsent(view, v -> new ConcurrentHashMap<>())
-                .computeIfAbsent(mapKey, p -> new ConcurrentHashMap<>())
+                .computeIfAbsent(key, k -> new ConcurrentHashMap<>())
                 .put(senderId, vote);
 
-        Map<String, VoteMessage> votes = voteAccumulator.get(view).get(mapKey);
+        Map<String, VoteMessage> votes = voteAccumulator.get(key);
         LOG.info("[Consensus] Vote from " + senderId + " for phase=" + phase + " R1=" + isRound1 + " R2=" + isRound2
                 + " count=" + votes.size() + "/" + quorum);
         if (votes.size() < quorum)
@@ -407,7 +439,7 @@ public class Consensus implements MessageListener {
                 LOG.info("[Consensus] Leader formed QC for phase=" + phase + " view=" + view);
 
                 // Reconstruct R from the R1 accumulator to combine signatures
-                Map<String, VoteMessage> r1Votes = voteAccumulator.get(view).get(phase + "-R1");
+                Map<String, VoteMessage> r1Votes = voteAccumulator.get(new PhaseRound(view, phase + "-R1"));
                 List<EdwardsPoint> ris = new ArrayList<>();
                 for (VoteMessage r1v : r1Votes.values()) {
                     ris.add(new CompressedEdwardsY(r1v.getRPoint().toByteArray()).decompress());
@@ -578,21 +610,16 @@ public class Consensus implements MessageListener {
             return;
         }
 
-        // Duplicate Execution Guard (Step 5 fix): Enforce strict idempotency
-        // at the consensus layer to prevent double execution on rapid DECIDE spams.
-        if (view <= highestDecidedView) {
-            LOG.warning("[Consensus] Duplicate DECIDE for already decided view " + view);
-            return;
-        }
-        highestDecidedView = view;
-
         LOG.info("[Consensus] DECIDED view " + view + " - command: " + currentProposal.getCommand());
         cancelTimer();
         // Reset timeout to initial value on successful decide — the exponential
         // backoff from onTimeout should not permanently degrade latency after
         // the system recovers from transient faults.
         timeoutMs = INITIAL_TIMEOUT_MS;
-        decideListener.onDecide(currentProposal.getCommand(), view);
+        // Paper Section 4.2: "execute new commands through m.justify.node"
+        // Walk the branch from the decided node back to the last-executed node
+        // and execute all un-executed commands in forward order.
+        executeCommittedBranch(currentProposal);
         advanceView();
     }
 
@@ -673,7 +700,7 @@ public class Consensus implements MessageListener {
         // Use a 5-view window as a safety margin for late-arriving messages.
         int staleThreshold = curView - 5;
         if (staleThreshold > 0) {
-            voteAccumulator.keySet().removeIf(v -> v < staleThreshold);
+            voteAccumulator.keySet().removeIf(k -> k.view() < staleThreshold);
             newViewAccumulator.keySet().removeIf(v -> v < staleThreshold);
             rsMemory.keySet().removeIf(v -> v < staleThreshold);
         }
@@ -758,6 +785,109 @@ public class Consensus implements MessageListener {
         newViewAccumulator
                 .computeIfAbsent(targetView, v -> new ConcurrentHashMap<>())
                 .put(senderId, msg);
+    }
+
+    // --- Incremental branch execution (paper Section 4.2) ---
+
+    /**
+     * Walk the committed branch from decidedNode back to lastExecutedNodeHash,
+     * then execute all un-executed commands in forward order (root → leaf).
+     *
+     * The paper says: "a replica considers the proposal embodied in the commitQC
+     * a committed decision, and executes the commands in the committed branch."
+     * "additionally, in order to incrementally execute a committed log of commands,
+     * the replica maintains the highest node whose branch has been executed."
+     */
+    private void executeCommittedBranch(HotStuffNode decidedNode) {
+        List<HotStuffNode> toExecute = new ArrayList<>();
+        HotStuffNode current = decidedNode;
+
+        // Walk backwards collecting un-executed nodes
+        int maxDepth = 1000; // safety limit, same as extendsFrom
+        while (current != null && maxDepth-- > 0
+                && !ByteString.copyFrom(current.getNodeHash()).equals(lastExecutedNodeHash)) {
+            if (!current.getCommand().isEmpty()) { // skip genesis
+                toExecute.add(current);
+            }
+            current = blockStore.get(current.getProto().getParentHash());
+        }
+
+        // Execute in forward order (root → leaf)
+        Collections.reverse(toExecute);
+        for (HotStuffNode node : toExecute) {
+            decideListener.onDecide(node.getCommand(), node.getViewNumber());
+        }
+
+        lastExecutedNodeHash = ByteString.copyFrom(decidedNode.getNodeHash());
+    }
+
+    // --- Branch catch-up / state sync (paper Section 4.2) ---
+
+    /**
+     * Send a SyncRequest to a peer asking for the chain of blocks
+     * leading up to the given nodeHash.
+     */
+    private void requestSync(String peerId, byte[] nodeHash) {
+        ConsensusMessage msg = ConsensusMessage.newBuilder()
+                .setViewNumber(curView)
+                .setSyncRequest(SyncRequest.newBuilder()
+                        .setNodeHash(ByteString.copyFrom(nodeHash))
+                        .build())
+                .build();
+        linkManager.send(peerId, msg.toByteArray());
+    }
+
+    /**
+     * Handle an incoming SyncRequest: walk the blockStore from the requested
+     * hash back to genesis and return all found blocks.
+     */
+    private synchronized void onSyncRequest(String senderId, SyncRequest req) {
+        List<ConsensusMessages.HotStuffNode> nodes = new ArrayList<>();
+        byte[] currentHash = req.getNodeHash().toByteArray();
+        int maxDepth = 1000; // same safety limit as extendsFrom
+        for (int i = 0; i < maxDepth; i++) {
+            HotStuffNode node = blockStore.get(ByteString.copyFrom(currentHash));
+            if (node == null)
+                break;
+            nodes.add(node.getProto());
+            currentHash = node.getProto().getParentHash().toByteArray();
+        }
+        if (nodes.isEmpty()) {
+            LOG.fine("[Consensus] SyncRequest from " + senderId + " — no blocks found");
+            return;
+        }
+        ConsensusMessage resp = ConsensusMessage.newBuilder()
+                .setViewNumber(curView)
+                .setSyncResponse(SyncResponse.newBuilder()
+                        .addAllNodes(nodes)
+                        .build())
+                .build();
+        linkManager.send(senderId, resp.toByteArray());
+        LOG.info("[Consensus] Sent " + nodes.size() + " blocks to " + senderId + " in sync response");
+    }
+
+    /**
+     * Handle an incoming SyncResponse: store all received blocks in the
+     * blockStore, then re-process any buffered PREPARE message.
+     */
+    private synchronized void onSyncResponse(String senderId, SyncResponse resp) {
+        int stored = 0;
+        for (ConsensusMessages.HotStuffNode protoNode : resp.getNodesList()) {
+            HotStuffNode node = new HotStuffNode(protoNode);
+            ByteString hash = ByteString.copyFrom(node.getNodeHash());
+            if (blockStore.putIfAbsent(hash, node) == null) {
+                stored++;
+            }
+        }
+        LOG.info("[Consensus] Received sync response with " + resp.getNodesCount()
+                + " blocks (" + stored + " new) from " + senderId);
+
+        // Re-process the buffered PREPARE if present
+        if (pendingPrepare != null) {
+            PendingPrepare pp = pendingPrepare;
+            pendingPrepare = null;
+            onPrepare(pp.senderId(), pp.msg(), pp.view());
+        }
     }
 
     public void shutdown() {

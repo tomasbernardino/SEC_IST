@@ -1,5 +1,6 @@
 package ist.group29.depchain;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -581,6 +582,385 @@ class ConsensusTest {
                         }
                 }
                 assertTrue(sentNewView, "Pacemaker must trigger a view change on timeout");
+        }
+
+        // Test 15: Incremental Branch Execution
+        @Test
+        void testIncrementalExecution() {
+                // Build a chain: genesis <- node_v1 <- node_v2 <- node_v3
+                HotStuffNode genesis = HotStuffNode.genesis();
+                HotStuffNode nodeV1 = genesis.createLeaf("cmd-view-1", 1);
+                HotStuffNode nodeV2 = nodeV1.createLeaf("cmd-view-2", 2);
+                HotStuffNode nodeV3 = nodeV2.createLeaf("cmd-view-3", 3);
+
+                // Populate blockStore with all nodes
+                consensus.storeBlock(nodeV1);
+                consensus.storeBlock(nodeV2);
+                consensus.storeBlock(nodeV3);
+
+                // Create a replica at view 3 with currentProposal set to nodeV3
+                List<String> commands = new ArrayList<>();
+                Service trackingService = new Service() {
+                        @Override
+                        public synchronized void onDecide(String command, int viewNumber) {
+                                super.onDecide(command, viewNumber);
+                                commands.add(command);
+                        }
+                };
+
+                // We need a replica that is in view 3 and has nodeV3 as currentProposal.
+                // We'll simulate this by creating a replica, feeding a PREPARE for view 1
+                // to set currentProposal, then triggering a DECIDE.
+                Consensus replica = new Consensus("node-2", NODE_IDS, mockLinkManager, trackingService, mockCrypto);
+                replica.start(null);
+
+                // Store the full chain in replica's blockStore
+                replica.storeBlock(nodeV1);
+                replica.storeBlock(nodeV2);
+                replica.storeBlock(nodeV3);
+
+                // Feed a PREPARE from the view-1 leader (node-0) so currentProposal is set
+                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(nodeV1.getProto())
+                                                .setJustify(QuorumCertificate.genesisQC().getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", prepareMsg.toByteArray());
+
+                // Now DECIDE for view 1 - this should only execute cmd-view-1
+                QuorumCertificate commitQC = QuorumCertificate.create(
+                                QuorumCertificate.COMMIT, 0, nodeV1.getNodeHash(), new byte[64]);
+                ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                                .setJustify(commitQC.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", decideMsg.toByteArray());
+
+                assertEquals(1, commands.size(), "Should execute exactly 1 command for single-node decide");
+                assertEquals("cmd-view-1", commands.get(0));
+
+                replica.shutdown();
+        }
+
+        // Test 16: Sync Request Triggered on Missing Block
+        @Test
+        void testSyncRequestTriggeredOnMissingBlock() {
+                // Create a replica at view 1 with no extra blocks in blockStore
+                Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, service, mockCrypto);
+                replica.start(null);
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                // Build a PREPARE that references a block we DON'T have
+                // The justify QC has view > 0 (fresher than lockedQC which is genesis)
+                // and references a node hash NOT in the blockStore
+                byte[] unknownHash = new byte[32];
+                unknownHash[0] = (byte) 0xDE;
+                unknownHash[1] = (byte) 0xAD;
+
+                // Create a node that "extends from" the unknown block
+                HotStuffNode proposed = new HotStuffNode(
+                                ist.group29.depchain.network.ConsensusMessages.HotStuffNode.newBuilder()
+                                                .setParentHash(ByteString.copyFrom(unknownHash))
+                                                .setCommand("cmd-catch-up")
+                                                .setViewNumber(1)
+                                                .setNodeHash(ByteString.copyFrom(
+                                                                CryptoUtils.computeHash(unknownHash, "cmd-catch-up",
+                                                                                1)))
+                                                .build());
+
+                // Justify QC with view 1 (> lockedQC view 0) referencing the unknown hash
+                QuorumCertificate freshJustify = QuorumCertificate.create(
+                                QuorumCertificate.PREPARE, 1, unknownHash, new byte[64]);
+
+                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(proposed.getProto())
+                                                .setJustify(freshJustify.getProto())
+                                                .build())
+                                .build();
+
+                replica.onMessage("node-0", prepareMsg.toByteArray());
+
+                // Verify a SyncRequest was sent to the leader (node-0)
+                org.mockito.ArgumentCaptor<byte[]> captor = org.mockito.ArgumentCaptor.forClass(byte[].class);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
+                                .send(org.mockito.ArgumentMatchers.eq("node-0"), captor.capture());
+
+                boolean sentSyncRequest = false;
+                for (byte[] raw : captor.getAllValues()) {
+                        try {
+                                ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
+                                if (msg.hasSyncRequest()) {
+                                        sentSyncRequest = true;
+                                }
+                        } catch (Exception ignored) {
+                        }
+                }
+                assertTrue(sentSyncRequest, "Replica should send a SyncRequest when blocks are missing");
+                replica.shutdown();
+        }
+
+        // Test 17: Sync Response Populates BlockStore
+        @Test
+        void testSyncResponsePopulatesBlockStore() {
+                // Build a chain: genesis <- node_v1 <- node_v2
+                HotStuffNode genesis = HotStuffNode.genesis();
+                HotStuffNode nodeV1 = genesis.createLeaf("cmd-view-1", 1);
+                HotStuffNode nodeV2 = nodeV1.createLeaf("cmd-view-2", 2);
+
+                // Initially consensus only has genesis in blockStore
+                // Send a SyncResponse containing nodeV1 and nodeV2
+                ConsensusMessage syncResp = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setSyncResponse(
+                                                ist.group29.depchain.network.ConsensusMessages.SyncResponse.newBuilder()
+                                                                .addNodes(nodeV1.getProto())
+                                                                .addNodes(nodeV2.getProto())
+                                                                .build())
+                                .build();
+
+                consensus.onMessage("node-1", syncResp.toByteArray());
+
+                // Verify the nodes are now in the blockStore via extendsFrom
+                assertTrue(consensus.extendsFrom(nodeV2, nodeV1.getNodeHash()),
+                                "nodeV2 should extend from nodeV1 after sync");
+                assertTrue(consensus.extendsFrom(nodeV2, genesis.getNodeHash()),
+                                "nodeV2 should extend from genesis after sync");
+        }
+
+        // Test 18: Orphaned Branch Not Executed
+        // Scenario: tree forks from nodeA — one branch is committed, the other is
+        // orphaned.
+        // Verifies executeCommittedBranch only walks the decided path.
+        @Test
+        void testOrphanedBranchNotExecuted() {
+                List<String> commands = new ArrayList<>();
+                Service trackingService = new Service() {
+                        @Override
+                        public synchronized void onDecide(String command, int viewNumber) {
+                                super.onDecide(command, viewNumber);
+                                commands.add(command);
+                        }
+                };
+
+                Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, trackingService, mockCrypto);
+                replica.start(null);
+
+                // Build forked tree:
+                // genesis ← nodeA("cmd-a") ← nodeOrphan("cmd-orphan") [orphaned branch]
+                // ↖ nodeCommitted("cmd-committed") [committed branch]
+                HotStuffNode genesis = HotStuffNode.genesis();
+                HotStuffNode nodeA = genesis.createLeaf("cmd-a", 1);
+                HotStuffNode nodeOrphan = nodeA.createLeaf("cmd-orphan", 2);
+                HotStuffNode nodeCommitted = nodeA.createLeaf("cmd-committed", 3);
+
+                replica.storeBlock(nodeA);
+                replica.storeBlock(nodeOrphan);
+                replica.storeBlock(nodeCommitted);
+
+                // PREPARE for nodeCommitted — justify references nodeA (its parent)
+                QuorumCertificate justifyA = QuorumCertificate.create(
+                                QuorumCertificate.PREPARE, 0, nodeA.getNodeHash(), new byte[64]);
+                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(nodeCommitted.getProto())
+                                                .setJustify(justifyA.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", prepareMsg.toByteArray());
+
+                // DECIDE (viewNumber=0 bypasses threshold sig verification)
+                QuorumCertificate commitQC = QuorumCertificate.create(
+                                QuorumCertificate.COMMIT, 0, nodeCommitted.getNodeHash(), new byte[64]);
+                ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                                .setJustify(commitQC.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", decideMsg.toByteArray());
+
+                // cmd-a and cmd-committed executed; cmd-orphan NOT (wrong branch)
+                assertEquals(2, commands.size(), "Should execute 2 commands on committed branch");
+                assertEquals("cmd-a", commands.get(0));
+                assertEquals("cmd-committed", commands.get(1));
+
+                replica.shutdown();
+        }
+
+        // Test 19: Multi-Command Incremental Execution
+        // Scenario: chain of 3 nodes decided at once — all 3 commands must execute in
+        // order.
+        @Test
+        void testMultiCommandIncrementalExecution() {
+                List<String> commands = new ArrayList<>();
+                Service trackingService = new Service() {
+                        @Override
+                        public synchronized void onDecide(String command, int viewNumber) {
+                                super.onDecide(command, viewNumber);
+                                commands.add(command);
+                        }
+                };
+
+                Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, trackingService, mockCrypto);
+                replica.start(null);
+
+                // Build chain: genesis ← nodeA ← nodeB ← nodeC
+                HotStuffNode genesis = HotStuffNode.genesis();
+                HotStuffNode nodeA = genesis.createLeaf("cmd-a", 1);
+                HotStuffNode nodeB = nodeA.createLeaf("cmd-b", 2);
+                HotStuffNode nodeC = nodeB.createLeaf("cmd-c", 3);
+
+                replica.storeBlock(nodeA);
+                replica.storeBlock(nodeB);
+                replica.storeBlock(nodeC);
+
+                // PREPARE for nodeC — justify references nodeB (parent of nodeC)
+                QuorumCertificate justifyB = QuorumCertificate.create(
+                                QuorumCertificate.PREPARE, 0, nodeB.getNodeHash(), new byte[64]);
+                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(nodeC.getProto())
+                                                .setJustify(justifyB.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", prepareMsg.toByteArray());
+
+                // DECIDE
+                QuorumCertificate commitQC = QuorumCertificate.create(
+                                QuorumCertificate.COMMIT, 0, nodeC.getNodeHash(), new byte[64]);
+                ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                                .setJustify(commitQC.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", decideMsg.toByteArray());
+
+                // All 3 commands executed in forward order
+                assertEquals(3, commands.size(), "Should execute all 3 commands in the branch");
+                assertEquals("cmd-a", commands.get(0));
+                assertEquals("cmd-b", commands.get(1));
+                assertEquals("cmd-c", commands.get(2));
+
+                replica.shutdown();
+        }
+
+        // Test 20: After PREPARE-only failure, prepareQC stays at genesis
+        // Scenario: replica accepts PREPARE but never receives PRE-COMMIT. On timeout,
+        // the NEW-VIEW carries genesis prepareQC — next leader won't preserve the
+        // failed branch.
+        @Test
+        void testViewChangeAfterPrepareKeepsGenesisPrepareQC() throws InterruptedException {
+                Consensus replica = new Consensus("node-3", NODE_IDS, mockLinkManager, service, mockCrypto);
+                replica.start(null);
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                // Feed PREPARE from node-0 (view 1 leader)
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1);
+                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(proposed.getProto())
+                                                .setJustify(QuorumCertificate.genesisQC().getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", prepareMsg.toByteArray());
+
+                // Wait for pacemaker timeout
+                Thread.sleep(4500);
+
+                // After timeout, NEW-VIEW to node-1 (view 2 leader) should carry
+                // genesis prepareQC (view 0) because prepareQC is only updated in onPreCommit
+                org.mockito.ArgumentCaptor<byte[]> captor = org.mockito.ArgumentCaptor.forClass(byte[].class);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
+                                .send(org.mockito.ArgumentMatchers.eq("node-1"), captor.capture());
+
+                boolean foundGenesisNewView = false;
+                for (byte[] raw : captor.getAllValues()) {
+                        try {
+                                ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
+                                if (msg.hasNewView()) {
+                                        QuorumCertificate qc = new QuorumCertificate(msg.getNewView().getJustify());
+                                        if (qc.getViewNumber() == 0) {
+                                                foundGenesisNewView = true;
+                                        }
+                                }
+                        } catch (Exception ignored) {
+                        }
+                }
+                assertTrue(foundGenesisNewView,
+                                "After PREPARE-only failure, NEW-VIEW should carry genesis prepareQC (view 0)");
+                replica.shutdown();
+        }
+
+        // Test 21: After PRE-COMMIT, prepareQC is updated — branch preserved
+        // Scenario: replica receives PREPARE and PRE-COMMIT (prepareQC updated to view
+        // 1).
+        // On timeout, NEW-VIEW carries view-1 prepareQC — next leader must build on
+        // this branch.
+        @Test
+        void testViewChangeAfterPreCommitUpdatesPrepareQC() throws InterruptedException {
+                Consensus replica = new Consensus("node-3", NODE_IDS, mockLinkManager, service, mockCrypto);
+                replica.start(null);
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                // Feed PREPARE from node-0 (view 1 leader)
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1);
+                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(proposed.getProto())
+                                                .setJustify(QuorumCertificate.genesisQC().getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", prepareMsg.toByteArray());
+
+                // Feed PRE-COMMIT with a prepareQC (viewNumber=0 bypasses sig verification)
+                QuorumCertificate phaseQC = QuorumCertificate.create(
+                                QuorumCertificate.PREPARE, 0, proposed.getNodeHash(), new byte[64]);
+                ConsensusMessage preCommitMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPreCommit(ist.group29.depchain.network.ConsensusMessages.PreCommitMessage
+                                                .newBuilder()
+                                                .setJustify(phaseQC.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", preCommitMsg.toByteArray());
+
+                // Wait for pacemaker timeout
+                Thread.sleep(4500);
+
+                // NEW-VIEW to node-1 should now carry the UPDATED prepareQC
+                // (which has the proposed node's hash, not genesis)
+                org.mockito.ArgumentCaptor<byte[]> captor = org.mockito.ArgumentCaptor.forClass(byte[].class);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
+                                .send(org.mockito.ArgumentMatchers.eq("node-1"), captor.capture());
+
+                boolean foundUpdatedNewView = false;
+                for (byte[] raw : captor.getAllValues()) {
+                        try {
+                                ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
+                                if (msg.hasNewView()) {
+                                        QuorumCertificate qc = new QuorumCertificate(msg.getNewView().getJustify());
+                                        // The prepareQC should reference our proposed node, not genesis
+                                        if (java.util.Arrays.equals(qc.getNodeHash(), proposed.getNodeHash())) {
+                                                foundUpdatedNewView = true;
+                                        }
+                                }
+                        } catch (Exception ignored) {
+                        }
+                }
+                assertTrue(foundUpdatedNewView,
+                                "After PRE-COMMIT, NEW-VIEW should carry updated prepareQC referencing the proposal");
+                replica.shutdown();
         }
 
         // Helpers

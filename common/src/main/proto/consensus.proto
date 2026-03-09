@@ -79,6 +79,18 @@ message DecideMessage {
     QuorumCertificate justify = 1;  // Paper: m.justify <- commitQC
 }
 
+// State-sync request: sent by a replica that is missing ancestor blocks.
+// The paper says (Section 4.2): "a recipient who falls behind can catch up
+// by fetching missing nodes from other replicas."
+message SyncRequest {
+    bytes node_hash = 1;  // Hash of the block we need
+}
+
+// State-sync response: returns the chain of ancestor blocks.
+message SyncResponse {
+    repeated HotStuffNode nodes = 1;  // Ancestor chain (requested node → genesis)
+}
+
 // Top-level consensus envelope serialized into DataMessage.payload.
 // Parsed by Consensus.java; the network layer treats it as opaque bytes.
 // Note: sender_id removed — the authenticated sender is provided by
@@ -93,5 +105,7 @@ message ConsensusMessage {
         CommitMessage    commit     = 7;
         DecideMessage    decide     = 8;
         ChallengeMessage challenge  = 9;
+        SyncRequest      sync_request  = 10;
+        SyncResponse     sync_response = 11;
     }
 }
