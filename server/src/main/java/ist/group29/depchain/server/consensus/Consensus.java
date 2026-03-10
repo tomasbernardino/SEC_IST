@@ -36,9 +36,9 @@ public class Consensus implements MessageListener {
 
     private final String selfId;
     private final List<String> sortedNodeIds;
-    private final int n; 
-    private final int f; 
-    private final int quorum; 
+    private final int n;
+    private final int f;
+    private final int quorum;
     private final LinkManager linkManager;
     private final DecideListener decideListener;
     private CryptoManager cryptoManager;
@@ -59,15 +59,11 @@ public class Consensus implements MessageListener {
 
     private volatile HotStuffNode currentProposal = null;
 
-    private final ScheduledExecutorService pacemaker = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "Pacemaker");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ScheduledExecutorService pacemaker;
 
     private ScheduledFuture<?> viewTimer = null;
     private long timeoutMs = INITIAL_TIMEOUT_MS;
-    
+
     private int lastVotedPrepareView = 0;
 
     private ByteString lastExecutedNodeHash = ByteString.copyFrom(HotStuffNode.genesis().getNodeHash());
@@ -75,15 +71,23 @@ public class Consensus implements MessageListener {
     // Buffers a PREPARE message while waiting for a sync response.
     private record PendingPrepare(String senderId, PrepareMessage msg, int view) {
     }
+
     private volatile PendingPrepare pendingPrepare = null;
 
     public Consensus(String selfId, List<String> allNodeIds,
             LinkManager linkManager, DecideListener decideListener, String keysDir) {
-        this(selfId, allNodeIds, linkManager, decideListener, createDefaultCrypto(selfId, keysDir));
+        this(selfId, allNodeIds, linkManager, decideListener, createDefaultCrypto(selfId, keysDir),
+                createDefaultPacemaker());
     }
 
     public Consensus(String selfId, List<String> allNodeIds,
             LinkManager linkManager, DecideListener decideListener, CryptoManager cryptoManager) {
+        this(selfId, allNodeIds, linkManager, decideListener, cryptoManager, createDefaultPacemaker());
+    }
+
+    public Consensus(String selfId, List<String> allNodeIds,
+            LinkManager linkManager, DecideListener decideListener, CryptoManager cryptoManager,
+            ScheduledExecutorService pacemaker) {
         this.selfId = selfId;
         this.sortedNodeIds = new ArrayList<>(allNodeIds);
         Collections.sort(this.sortedNodeIds);
@@ -93,9 +97,18 @@ public class Consensus implements MessageListener {
         this.linkManager = linkManager;
         this.decideListener = decideListener;
         this.cryptoManager = cryptoManager;
+        this.pacemaker = pacemaker;
 
         HotStuffNode genesis = HotStuffNode.genesis();
         blockStore.put(ByteString.copyFrom(genesis.getNodeHash()), genesis);
+    }
+
+    private static ScheduledExecutorService createDefaultPacemaker() {
+        return Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "Pacemaker");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     private static CryptoManager createDefaultCrypto(String selfId, String keysDir) {
@@ -408,7 +421,7 @@ public class Consensus implements MessageListener {
      * Liveness rule: if the justify QC is fresher than lockedQC, accept anyway
      */
     private boolean safeNode(HotStuffNode node, QuorumCertificate qc) {
-      
+
         boolean safetyRule = extendsFrom(node, lockedQC.getNodeHash());
         boolean livenessRule = qc.getViewNumber() > lockedQC.getViewNumber();
         LOG.fine("[Consensus] safeNode: safety=" + safetyRule + " liveness=" + livenessRule);
@@ -420,7 +433,7 @@ public class Consensus implements MessageListener {
      * ancestorHash by walking the blockStore hash chain backwards.
      */
     public boolean extendsFrom(HotStuffNode node, byte[] ancestorHash) {
- 
+
         if (Arrays.equals(ancestorHash, HotStuffNode.genesis().getNodeHash())) {
             return true;
         }
@@ -429,16 +442,15 @@ public class Consensus implements MessageListener {
             return true;
         }
 
-
         byte[] currentHash = node.getProto().getParentHash().toByteArray();
-        for (int depth = 0; depth < 1000; depth++) { 
+        for (int depth = 0; depth < 1000; depth++) {
             if (Arrays.equals(currentHash, ancestorHash)) {
                 return true;
             }
 
             HotStuffNode current = blockStore.get(ByteString.copyFrom(currentHash));
             if (current == null) {
-                return false; 
+                return false;
             }
 
             currentHash = current.getProto().getParentHash().toByteArray();
@@ -482,6 +494,8 @@ public class Consensus implements MessageListener {
     }
 
     public String leader(int view) {
+        if (view <= 0)
+            return null;
         return sortedNodeIds.get((view - 1) % n);
     }
 
@@ -548,7 +562,7 @@ public class Consensus implements MessageListener {
         List<HotStuffNode> toExecute = new ArrayList<>();
         HotStuffNode current = decidedNode;
 
-        int maxDepth = 1000; 
+        int maxDepth = 1000;
         while (current != null && maxDepth-- > 0
                 && !ByteString.copyFrom(current.getNodeHash()).equals(lastExecutedNodeHash)) {
             if (!current.getCommand().isEmpty()) {
@@ -614,7 +628,7 @@ public class Consensus implements MessageListener {
         linkManager.send(senderId, resp.toByteArray());
         LOG.info("[Consensus] Sent " + nodes.size() + " blocks to " + senderId + " in sync response");
     }
-    
+
     /**
      * Handle an incoming SyncResponse: store all received blocks in the
      * blockStore, then re-process any buffered PREPARE message.
