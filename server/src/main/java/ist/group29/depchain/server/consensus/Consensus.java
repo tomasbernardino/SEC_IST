@@ -566,6 +566,13 @@ public class Consensus implements MessageListener {
     }
 
     /**
+     * Store a block in the local block store.
+     */
+    public void storeBlock(HotStuffNode node) {
+        blockStore.put(ByteString.copyFrom(node.getNodeHash()), node);
+    }
+
+    /**
      * Send a SyncRequest to a peer asking for the chain of blocks
      * leading up to the given nodeHash.
      */
@@ -607,7 +614,7 @@ public class Consensus implements MessageListener {
         linkManager.send(senderId, resp.toByteArray());
         LOG.info("[Consensus] Sent " + nodes.size() + " blocks to " + senderId + " in sync response");
     }
-
+    
     /**
      * Handle an incoming SyncResponse: store all received blocks in the
      * blockStore, then re-process any buffered PREPARE message.
