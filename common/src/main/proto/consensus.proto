@@ -14,10 +14,6 @@ message HotStuffNode {
 }
 
 // A Quorum Certificate (QC) over the tuple <type, view_number, node_hash>.
-// Represents the collective agreement of (n-f) replicas on a specific protocol phase.
-//
-// Step 3 approach: bundles (n-f) individual HMAC-based partial signatures.
-// Step 5 upgrade:  replaces with a single tcombine() threshold signature.
 message QuorumCertificate {
     string         type        = 1;  // "prepare", "pre-commit", or "commit"
     uint32         view_number = 2;  // View in which this QC was formed
@@ -29,62 +25,54 @@ message QuorumCertificate {
 
 // Sent by every replica when entering a new view.
 // Carries its highest locally-seen prepareQC so the leader can determine the
-// safe branch (Algorithm 2, lines 3-4).
+// safe branch
 message NewViewMessage {
-    QuorumCertificate justify = 1;  // Paper: m.justify <- prepareQC
+    QuorumCertificate justify = 1;  // m.justify <- prepareQC
 }
 
-// Broadcast by the leader to propose a new command branch (Algorithm 2, lines 5-6).
-// justify proves why the proposed node extends from a safe branch.
+// Broadcast by the leader to propose a new command
 message PrepareMessage {
     HotStuffNode      node    = 1;
-    QuorumCertificate justify = 2;  // Paper: m.justify <- highQC
+    QuorumCertificate justify = 2;  // m.justify <- highQC
 }
 
 // A signed vote cast by a replica in the prepare, pre-commit, or commit phases.
 // The 'phase' field disambiguates which voting round this belongs to.
-// partial_sig = HMAC(session_key, phase | view_number | node_hash)  — Step 3 approach.
 message VoteMessage {
     string phase            = 1;  // "prepare", "pre-commit", or "commit"
-    // view_number removed: redundant with ConsensusMessage.view_number (envelope)
     bytes  node_hash        = 3;
-    bytes  signature_share  = 4;  // RSA threshold signature share (Step 5)
+    bytes  signature_share  = 4; 
 }
 
-// Broadcast by the leader after collecting (n-f) prepare votes (Algorithm 2, line 14).
+// Broadcast by the leader after collecting (n-f) prepare votes
 // Replicas update their prepareQC upon receiving this.
 message PreCommitMessage {
-    QuorumCertificate justify = 1;  // Paper: m.justify <- prepareQC
+    QuorumCertificate justify = 1;  // m.justify <- prepareQC
 }
 
-// Broadcast by the leader after collecting (n-f) pre-commit votes (Algorithm 2, line 22).
-// Replicas set their lockedQC <- precommitQC upon receiving this (line 25).
+// Broadcast by the leader after collecting (n-f) pre-commit votes
+// Replicas set their lockedQC <- precommitQC upon receiving this
 message CommitMessage {
-    QuorumCertificate justify = 1;  // Paper: m.justify <- precommitQC
+    QuorumCertificate justify = 1;  // m.justify <- precommitQC
 }
 
-// Broadcast by the leader after collecting (n-f) commit votes (Algorithm 2, line 30).
-// The commitQC is irrevocable proof of consensus. Replicas execute the command.
+// Broadcast by the leader after collecting (n-f) commit votes
+// Replicas execute the command.
 message DecideMessage {
-    QuorumCertificate justify = 1;  // Paper: m.justify <- commitQC
+    QuorumCertificate justify = 1;  // m.justify <- commitQC
 }
 
 // State-sync request: sent by a replica that is missing ancestor blocks.
-// The paper says (Section 4.2): "a recipient who falls behind can catch up
-// by fetching missing nodes from other replicas."
 message SyncRequest {
-    bytes node_hash = 1;  // Hash of the block we need
+    bytes node_hash = 1;
 }
 
 // State-sync response: returns the chain of ancestor blocks.
 message SyncResponse {
-    repeated HotStuffNode nodes = 1;  // Ancestor chain (requested node → genesis)
+    repeated HotStuffNode nodes = 1;
 }
 
-// Top-level consensus envelope serialized into DataMessage.payload.
-// Parsed by Consensus.java; the network layer treats it as opaque bytes.
-// Note: sender_id removed — the authenticated sender is provided by
-// LinkManager.onMessage(senderId, payload), not from the message itself.
+
 message ConsensusMessage {
     uint32 view_number = 2;
     oneof type {

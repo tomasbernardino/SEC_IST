@@ -37,13 +37,6 @@ public final class CryptoUtils {
         return kpg.generateKeyPair();
     }
 
-    /** Generate an RSA identity key pair */
-    public static KeyPair generateRSAKeyPair() throws GeneralSecurityException {
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
-        kpg.initialize(2048);
-        return kpg.generateKeyPair();
-    }
-
     /** Compute an AES session key from a DH key agreement */
     public static SecretKey computeSharedSecret(PrivateKey myDHPrivate, PublicKey otherDHPublic)
             throws GeneralSecurityException {

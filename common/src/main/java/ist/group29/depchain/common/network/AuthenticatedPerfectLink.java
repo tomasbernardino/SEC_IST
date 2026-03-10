@@ -39,9 +39,8 @@ public class AuthenticatedPerfectLink {
     private final AtomicLong sendSeqCounter = new AtomicLong(0); 
     private final List<byte[]> sendBuffer = new ArrayList<>();
 
-    // Duplicate filtering
-    private long highestDeliveredSeq = -1;
-    private final HashSet<Long> nonDeliveredSeqs = new HashSet<>();
+    // Duplicate filtering — simple Message-ID deduplication
+    private final HashSet<Long> deliveredIds = new HashSet<>();
     
     private volatile SecretKey sessionKey = null;
 
@@ -232,18 +231,9 @@ public class AuthenticatedPerfectLink {
 
             // Duplicate filtering
             synchronized (this) {
-                if (seq <= highestDeliveredSeq) {
-                    // Below or at highest delivered seq — deliver only if it fills a gap
-                    if (nonDeliveredSeqs.remove(seq)) {
-                        return payload;
-                    }
+                if (!deliveredIds.add(seq)) {
                     return null; // Duplicate
                 }
-                // seq > highestDeliveredSeq — record any gaps and advance
-                for (long i = highestDeliveredSeq + 1; i < seq; i++) {
-                    nonDeliveredSeqs.add(i);
-                }
-                highestDeliveredSeq = seq;
                 return payload;
             }
         } catch (GeneralSecurityException e) {

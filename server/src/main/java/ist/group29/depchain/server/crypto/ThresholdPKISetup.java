@@ -9,23 +9,21 @@ import java.io.FileOutputStream;
 import java.io.ObjectOutputStream;
 
 /**
- * Utility to generate and distribute Threshold Signature shares for DepChain.
+ * Utility to generate and distribute Threshold Signature shares
  * It uses the threshsig library to generate RSA-based threshold keys.
  */
 public class ThresholdPKISetup {
 
     public static void main(String[] args) throws Exception {
         int n = 4;
-        int k = 3; // Quorum is k=3 for n=4
+        int k = 3; 
         int keysize = 2048;
 
-        // Use the first argument as keys directory if provided, otherwise default to
-        // "keys"
         String keysPath = (args.length > 0) ? args[0] : "keys";
         File keysDir = new File(keysPath);
 
         System.out.println("[Threshold PKI] Manual Setup Utility");
-        System.out.println("Running this will re-generate all threshold keys. Use with CAUTION.");
+        System.out.println("Running this will re-generate all threshold keys.");
         System.out.println(
                 "[Threshold PKI] Generating RSA keys for n=" + n + ", k=" + k + " into: " + keysDir.getAbsolutePath());
 
@@ -41,14 +39,12 @@ public class ThresholdPKISetup {
                 System.out.println("Created directory: " + keysDir.getAbsolutePath());
         }
 
-        // Save the group public key
         File pubFile = new File(keysDir, "threshold_public.key");
         try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(pubFile))) {
             oos.writeObject(groupKey);
         }
         System.out.println("Saved " + pubFile.getName() + " to " + keysDir.getPath());
 
-        // Save the private shares for each node
         for (int i = 0; i < n; i++) {
             File shareFile = new File(keysDir, "node-" + i + "-threshold.key");
             try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(shareFile))) {

@@ -1,52 +1,52 @@
-        package ist.group29.depchain;
+package ist.group29.depchain;
 
-        import java.util.ArrayList;
-        import java.util.List;
-        import java.util.concurrent.CountDownLatch;
-        import java.util.concurrent.TimeUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
-        import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-        import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-        import static org.junit.jupiter.api.Assertions.assertEquals;
-        import static org.junit.jupiter.api.Assertions.assertTrue;
-        import org.junit.jupiter.api.BeforeEach;
-        import org.junit.jupiter.api.Test;
-        import org.junit.jupiter.api.extension.ExtendWith;
-        import static org.mockito.ArgumentMatchers.any;
-        import static org.mockito.ArgumentMatchers.anyList;
-        import static org.mockito.Mockito.lenient;
-        import org.mockito.Mock;
-        import org.mockito.junit.jupiter.MockitoExtension;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.lenient;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
-        import ist.group29.depchain.server.crypto.CryptoManager;
-        import com.google.protobuf.ByteString;
+import ist.group29.depchain.server.crypto.CryptoManager;
+import com.google.protobuf.ByteString;
 
-        import ist.group29.depchain.common.crypto.CryptoUtils;
-        import ist.group29.depchain.common.network.LinkManager;
-        import ist.group29.depchain.network.ConsensusMessages;
-        import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
-        import ist.group29.depchain.network.ConsensusMessages.NewViewMessage;
-        import ist.group29.depchain.network.ConsensusMessages.PrepareMessage;
-        import ist.group29.depchain.network.ConsensusMessages.VoteMessage;
-        import ist.group29.depchain.server.consensus.Consensus;
-        import ist.group29.depchain.server.consensus.HotStuffNode;
-        import ist.group29.depchain.server.consensus.QuorumCertificate;
-        import ist.group29.depchain.server.service.Service;
+import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.common.network.LinkManager;
+import ist.group29.depchain.network.ConsensusMessages;
+import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
+import ist.group29.depchain.network.ConsensusMessages.NewViewMessage;
+import ist.group29.depchain.network.ConsensusMessages.PrepareMessage;
+import ist.group29.depchain.network.ConsensusMessages.VoteMessage;
+import ist.group29.depchain.server.consensus.Consensus;
+import ist.group29.depchain.server.consensus.HotStuffNode;
+import ist.group29.depchain.server.consensus.QuorumCertificate;
+import ist.group29.depchain.server.service.Service;
 
-        /**
-         * Unit tests for the Basic HotStuff consensus engine.
-         *
-         * Tests use Mockito to substitute a real LinkManager with a mock, making it
-         * possible to feed crafted messages directly to the
-         * consensus state machine without actually opening UDP sockets. This mirrors
-         * the approach used in the old project's ByzantineConsensusTest, but
-         * adapted to the HotStuff protocol and our event-driven (callback)
-         * architecture.
-         *
-         * System parameters: n=4, f=1, quorum=3 (smallest BFT cluster).
-         */
-        @ExtendWith(MockitoExtension.class)
-        class ConsensusTest {
+/**
+ * Unit tests for the Basic HotStuff consensus engine.
+ *
+ * Tests use Mockito to substitute a real LinkManager with a mock, making it
+ * possible to feed crafted messages directly to the
+ * consensus state machine without actually opening UDP sockets. This mirrors
+ * the approach used in the old project's ByzantineConsensusTest, but
+ * adapted to the HotStuff protocol and our event-driven (callback)
+ * architecture.
+ *
+ * System parameters: n=4, f=1, quorum=3 (smallest BFT cluster).
+ */
+@ExtendWith(MockitoExtension.class)
+class ConsensusTest {
 
         // 4-node BFT cluster: n=4, f=1, quorum=3
         static final int N = 4;
@@ -73,7 +73,6 @@
                 lenient().when(mockCrypto.aggregateSignatureShares(any(), anyList(), anyList()))
                                 .thenReturn(new byte[128]);
                 lenient().when(mockCrypto.verifyThresholdSignature(any(), any())).thenReturn(true);
-                lenient().when(mockCrypto.getThresholdPublicKey()).thenReturn(new byte[256]);
 
                 consensus = new Consensus("node-0", NODE_IDS, mockLinkManager, service, mockCrypto);
         }
@@ -123,7 +122,7 @@
                 HotStuffNode conflictingNode = new HotStuffNode(
                                 ConsensusMessages.HotStuffNode.newBuilder()
                                                 .setParentHash(ByteString.copyFrom(conflictingParentHash)) // different
-                                                                                                                // chain!
+                                                                                                           // chain!
                                                 .setCommand("conflicting-cmd")
                                                 .setViewNumber(3)
                                                 .setNodeHash(ByteString.copyFrom(
@@ -1011,4 +1010,4 @@
                 byte[] genesisHash = HotStuffNode.genesis().getNodeHash();
                 return CryptoUtils.computeHash(genesisHash, command, view);
         }
-        }
+}

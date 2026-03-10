@@ -43,7 +43,6 @@ public class CryptoManager {
     }
 
     public byte[] getThresholdPublicKey() {
-        // Return modulus or some identifier if needed, for now just use the object
         return groupKey.getModulus().toByteArray();
     }
 
@@ -51,9 +50,6 @@ public class CryptoManager {
         return groupKey;
     }
 
-    /**
-     * Compute a signature share for the given data.
-     */
     public byte[] computeSignatureShare(byte[] data) {
         SigShare share = privateShare.sign(data);
         return share.getBytes();
