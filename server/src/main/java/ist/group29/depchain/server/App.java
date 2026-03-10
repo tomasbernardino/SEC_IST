@@ -3,6 +3,7 @@ package ist.group29.depchain.server;
 import ist.group29.depchain.server.consensus.Consensus;
 import ist.group29.depchain.server.config.NodeConfig;
 import ist.group29.depchain.common.network.LinkManager;
+import ist.group29.depchain.common.network.MessageListener;
 import ist.group29.depchain.server.service.Service;
 
 import java.nio.file.Path;
@@ -42,11 +43,11 @@ public class App {
         allNodeIds.add(selfId);
 
         LinkManager linkManager = new LinkManager(
-            config.self(), config.peers(),
-            config.identityKeyPair(), config.peerPublicKeys());
+                config.self(), config.peers(),
+                config.identityKeyPair(), config.peerPublicKeys());
 
         Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service, keysDir.toString());
-        
+
         linkManager.setMessageListener(consensus::onMessage);
 
         linkManager.start();

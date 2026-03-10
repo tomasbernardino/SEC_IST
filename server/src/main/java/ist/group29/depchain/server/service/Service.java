@@ -22,7 +22,8 @@ public class Service implements DecideListener {
      * Called by the consensus engine every time a command is decided
      */
     @Override
-    public synchronized void onDecide(String command, int viewNumber) {
+    public synchronized void onDecide(String command, int viewNumber, String clientId, long timestamp) {
+        LOG.info("[Service] Command decided: " + command + " (view=" + viewNumber + ", client=" + clientId + ")");
         blockchain.add(command);
         LOG.info("[Service] Decided at view " + viewNumber
                 + " - blockchain[" + (blockchain.size() - 1) + "] = \"" + command + "\"");
@@ -31,6 +32,7 @@ public class Service implements DecideListener {
     public synchronized List<String> getChain() {
         return Collections.unmodifiableList(new ArrayList<>(blockchain));
     }
+
     public synchronized int size() {
         return blockchain.size();
     }

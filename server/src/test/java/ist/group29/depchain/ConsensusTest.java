@@ -178,7 +178,7 @@ class ConsensusTest {
                 // Build a valid proposal from node-0 (leader(1)) to node-0 (ourselves):
 
                 HotStuffNode proposed = HotStuffNode.genesis()
-                                .createLeaf("hello-world", 1);
+                                .createLeaf("hello-world", 1, "system", 0);
 
                 QuorumCertificate freshJustify = QuorumCertificate.genesisQC();
 
@@ -217,8 +217,9 @@ class ConsensusTest {
                 CountDownLatch decideLatch = new CountDownLatch(1);
                 Service trackingService = new Service() {
                         @Override
-                        public synchronized void onDecide(String command, int viewNumber) {
-                                super.onDecide(command, viewNumber);
+                        public synchronized void onDecide(String command, int viewNumber, String clientId,
+                                        long timestamp) {
+                                super.onDecide(command, viewNumber, clientId, timestamp);
                                 decideLatch.countDown();
                         }
                 };
@@ -262,7 +263,8 @@ class ConsensusTest {
         // Test 5: HotStuffNode hash chaining
 
         /**
-         * Verify that createLeaf() produces deterministic hash chains
+         * Verify that createLeaf("cmd", 0, "system", 0) produces deterministic hash
+         * chains
          * and that extendsFrom() correctly checks ancestry.
          *
          * This validates the hash-chaining property described in Section 4.2:
@@ -276,8 +278,8 @@ class ConsensusTest {
         @Test
         void testHotStuffNodeHashChaining() {
                 HotStuffNode genesis = HotStuffNode.genesis();
-                HotStuffNode child1 = genesis.createLeaf("cmd-A", 1);
-                HotStuffNode child2 = child1.createLeaf("cmd-B", 2);
+                HotStuffNode child1 = genesis.createLeaf("cmd", 0, "system", 0);
+                HotStuffNode child2 = child1.createLeaf("cmd", 0, "system", 0);
 
                 // Parent hash linkage
                 assertArrayEquals(genesis.getNodeHash(),
@@ -300,7 +302,7 @@ class ConsensusTest {
                                 "child2 must extend from genesis (recursive)");
 
                 // Determinism: same inputs must produce same hash
-                HotStuffNode child1b = genesis.createLeaf("cmd-A", 1);
+                HotStuffNode child1b = genesis.createLeaf("cmd", 0, "system", 0);
                 assertArrayEquals(child1.getNodeHash(), child1b.getNodeHash(),
                                 "Hash must be deterministic for the same inputs");
         }
@@ -312,7 +314,8 @@ class ConsensusTest {
                 replica.start(null); // Join view 1
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
-                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("evil-cmd", 1);
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("evil-cmd", 1, "system",
+                                System.currentTimeMillis());
                 byte[] randomHash = new byte[32];
                 randomHash[0] = 1; // Not genesis hash
                 HotStuffNode evilNode = new HotStuffNode(
@@ -363,7 +366,8 @@ class ConsensusTest {
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
                 // Leader sends first valid PREPARE
-                HotStuffNode proposedA = HotStuffNode.genesis().createLeaf("cmd-A", 1);
+                HotStuffNode proposedA = HotStuffNode.genesis().createLeaf("cmd-A", 1, "system",
+                                System.currentTimeMillis());
                 ConsensusMessage prepareMsgA = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -378,7 +382,8 @@ class ConsensusTest {
                                 .send(org.mockito.ArgumentMatchers.eq("node-0"), org.mockito.ArgumentMatchers.any());
 
                 // Leader equivocation! Sends a second PREPARE for the same view
-                HotStuffNode proposedB = HotStuffNode.genesis().createLeaf("cmd-B", 1);
+                HotStuffNode proposedB = HotStuffNode.genesis().createLeaf("cmd-B", 1, "system",
+                                System.currentTimeMillis());
                 ConsensusMessage prepareMsgB = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -400,8 +405,9 @@ class ConsensusTest {
                 int[] decideCalls = { 0 };
                 Service trackingService = new Service() {
                         @Override
-                        public synchronized void onDecide(String command, int viewNumber) {
-                                super.onDecide(command, viewNumber);
+                        public synchronized void onDecide(String command, int viewNumber, String clientId,
+                                        long timestamp) {
+                                super.onDecide(command, viewNumber, clientId, timestamp);
                                 decideCalls[0]++;
                         }
                 };
@@ -409,7 +415,7 @@ class ConsensusTest {
                 replica.start(null); // Join view 1
 
                 // First, feed a PREPARE so currentProposal is set!
-                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd", 1);
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd", 0, "system", 0);
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -446,8 +452,9 @@ class ConsensusTest {
                 int[] decideCalls = { 0 };
                 Service trackingService = new Service() {
                         @Override
-                        public synchronized void onDecide(String command, int viewNumber) {
-                                super.onDecide(command, viewNumber);
+                        public synchronized void onDecide(String command, int viewNumber, String clientId,
+                                        long timestamp) {
+                                super.onDecide(command, viewNumber, clientId, timestamp);
                                 decideCalls[0]++;
                         }
                 };
@@ -500,7 +507,8 @@ class ConsensusTest {
                 feedNewView(consensus, "node-2", 10); // Now in View 10
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
-                HotStuffNode oldNode = HotStuffNode.genesis().createLeaf("old", 2);
+                HotStuffNode oldNode = HotStuffNode.genesis().createLeaf("old", 2, "system",
+                                System.currentTimeMillis());
                 ConsensusMessage oldPrepare = ConsensusMessage.newBuilder()
                                 .setViewNumber(2)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -520,7 +528,7 @@ class ConsensusTest {
                 Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, service, mockCrypto);
                 replica.start(null);
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
-                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd", 1);
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd", 0, "system", 0);
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -565,9 +573,9 @@ class ConsensusTest {
         void testIncrementalExecution() {
                 // Build a chain: genesis <- node_v1 <- node_v2 <- node_v3
                 HotStuffNode genesis = HotStuffNode.genesis();
-                HotStuffNode nodeV1 = genesis.createLeaf("cmd-view-1", 1);
-                HotStuffNode nodeV2 = nodeV1.createLeaf("cmd-view-2", 2);
-                HotStuffNode nodeV3 = nodeV2.createLeaf("cmd-view-3", 3);
+                HotStuffNode nodeV1 = genesis.createLeaf("cmd-view-1", 1, "system", 0);
+                HotStuffNode nodeV2 = nodeV1.createLeaf("cmd-view-2", 2, "system", 0);
+                HotStuffNode nodeV3 = nodeV2.createLeaf("cmd-view-3", 3, "system", 0);
 
                 // Populate blockStore with all nodes
                 consensus.storeBlock(nodeV1);
@@ -578,8 +586,9 @@ class ConsensusTest {
                 List<String> commands = new ArrayList<>();
                 Service trackingService = new Service() {
                         @Override
-                        public synchronized void onDecide(String command, int viewNumber) {
-                                super.onDecide(command, viewNumber);
+                        public synchronized void onDecide(String command, int viewNumber, String clientId,
+                                        long timestamp) {
+                                super.onDecide(command, viewNumber, clientId, timestamp);
                                 commands.add(command);
                         }
                 };
@@ -686,8 +695,8 @@ class ConsensusTest {
         void testSyncResponsePopulatesBlockStore() {
                 // Build a chain: genesis <- node_v1 <- node_v2
                 HotStuffNode genesis = HotStuffNode.genesis();
-                HotStuffNode nodeV1 = genesis.createLeaf("cmd-view-1", 1);
-                HotStuffNode nodeV2 = nodeV1.createLeaf("cmd-view-2", 2);
+                HotStuffNode nodeV1 = genesis.createLeaf("cmd", 0, "system", 0);
+                HotStuffNode nodeV2 = nodeV1.createLeaf("cmd", 0, "system", 0);
 
                 // Initially consensus only has genesis in blockStore
                 // Send a SyncResponse containing nodeV1 and nodeV2
@@ -718,8 +727,9 @@ class ConsensusTest {
                 List<String> commands = new ArrayList<>();
                 Service trackingService = new Service() {
                         @Override
-                        public synchronized void onDecide(String command, int viewNumber) {
-                                super.onDecide(command, viewNumber);
+                        public synchronized void onDecide(String command, int viewNumber, String clientId,
+                                        long timestamp) {
+                                super.onDecide(command, viewNumber, clientId, timestamp);
                                 commands.add(command);
                         }
                 };
@@ -731,9 +741,9 @@ class ConsensusTest {
                 // genesis ← nodeA("cmd-a") ← nodeOrphan("cmd-orphan") [orphaned branch]
                 // ↖ nodeCommitted("cmd-committed") [committed branch]
                 HotStuffNode genesis = HotStuffNode.genesis();
-                HotStuffNode nodeA = genesis.createLeaf("cmd-a", 1);
-                HotStuffNode nodeOrphan = nodeA.createLeaf("cmd-orphan", 2);
-                HotStuffNode nodeCommitted = nodeA.createLeaf("cmd-committed", 3);
+                HotStuffNode nodeA = genesis.createLeaf("cmd-a", 1, "system", 0);
+                HotStuffNode nodeOrphan = nodeA.createLeaf("cmd-orphan", 2, "system", 0);
+                HotStuffNode nodeCommitted = nodeA.createLeaf("cmd-committed", 3, "system", 0);
 
                 replica.storeBlock(nodeA);
                 replica.storeBlock(nodeOrphan);
@@ -778,8 +788,9 @@ class ConsensusTest {
                 List<String> commands = new ArrayList<>();
                 Service trackingService = new Service() {
                         @Override
-                        public synchronized void onDecide(String command, int viewNumber) {
-                                super.onDecide(command, viewNumber);
+                        public synchronized void onDecide(String command, int viewNumber, String clientId,
+                                        long timestamp) {
+                                super.onDecide(command, viewNumber, clientId, timestamp);
                                 commands.add(command);
                         }
                 };
@@ -789,9 +800,9 @@ class ConsensusTest {
 
                 // Build chain: genesis ← nodeA ← nodeB ← nodeC
                 HotStuffNode genesis = HotStuffNode.genesis();
-                HotStuffNode nodeA = genesis.createLeaf("cmd-a", 1);
-                HotStuffNode nodeB = nodeA.createLeaf("cmd-b", 2);
-                HotStuffNode nodeC = nodeB.createLeaf("cmd-c", 3);
+                HotStuffNode nodeA = genesis.createLeaf("cmd-a", 1, "system", 0);
+                HotStuffNode nodeB = nodeA.createLeaf("cmd-b", 2, "system", 0);
+                HotStuffNode nodeC = nodeB.createLeaf("cmd-c", 3, "system", 0);
 
                 replica.storeBlock(nodeA);
                 replica.storeBlock(nodeB);
@@ -878,7 +889,8 @@ class ConsensusTest {
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
                 // Feed PREPARE from node-0 (view 1 leader)
-                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1);
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1, "system",
+                                System.currentTimeMillis());
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -927,7 +939,8 @@ class ConsensusTest {
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
                 // Feed PREPARE from node-0 (view 1 leader)
-                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1);
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1, "system",
+                                System.currentTimeMillis());
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()

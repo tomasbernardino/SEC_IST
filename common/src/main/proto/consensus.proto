@@ -11,6 +11,8 @@ message HotStuffNode {
     string command     = 2;  // The client command (a string to append, Stage 1)
     uint32 view_number = 3;  // View in which this node was proposed
     bytes  node_hash   = 4;  // SHA-256(parent_hash | command | view_number)
+    string client_id   = 5;  // ID of the client that sent the request
+    int64  timestamp   = 6;  // Client's request timestamp
 }
 
 // A Quorum Certificate (QC) over the tuple <type, view_number, node_hash>.

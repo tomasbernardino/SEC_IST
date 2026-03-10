@@ -57,6 +57,7 @@ public class CryptoManager {
      */
     public byte[] aggregateSignatureShares(byte[] data, List<byte[]> sharesData, List<Integer> participantIds)
             throws Exception {
+
         SigShare[] shares = new SigShare[sharesData.size()];
         for (int i = 0; i < sharesData.size(); i++) {
             shares[i] = new SigShare(participantIds.get(i), sharesData.get(i));
@@ -93,9 +94,9 @@ public class CryptoManager {
     }
 
     public boolean verifyThresholdSignature(byte[] signature, byte[] data) {
-        BigInteger sig = new BigInteger(signature);
+        BigInteger sig = new BigInteger(1, signature);
         BigInteger mod = groupKey.getModulus();
-        BigInteger x = (new BigInteger(data)).mod(mod);
+        BigInteger x = (new BigInteger(1, data)).mod(mod);
         BigInteger delta = privateShare.getDelta();
 
         BigInteger eprime = delta.multiply(delta).shiftLeft(2);

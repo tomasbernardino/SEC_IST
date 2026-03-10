@@ -23,9 +23,15 @@ public class LinkManager {
     private volatile MessageListener listener;
     private Thread receiveThread;
 
+    // Kept for dynamic APL creation when new peers (e.g. clients) connect
+    private final String selfId;
+    private final KeyPair identityKeyPair;
 
     public LinkManager(ProcessInfo self, Map<String, ProcessInfo> peers,
-                    KeyPair identityKeyPair, Map<String, PublicKey> peerPublicKeys) throws SocketException {
+            KeyPair identityKeyPair, Map<String, PublicKey> peerPublicKeys) throws SocketException {
+
+        this.selfId = self.id();
+        this.identityKeyPair = identityKeyPair;
 
         Map<String, ProcessInfo> fullAddressMap = new HashMap<>(peers);
         fullAddressMap.put(self.id(), self);
@@ -38,17 +44,22 @@ public class LinkManager {
             String peerId = entry.getKey();
             PublicKey peerPubKey = peerPublicKeys.get(peerId);
             AuthenticatedPerfectLink apl = new AuthenticatedPerfectLink(
-                    sl, self.id(), peerId, identityKeyPair, peerPubKey);
+                    sl, selfId, peerId, identityKeyPair, peerPubKey);
             apls.put(peerId, apl);
         }
+        this.peerPublicKeys = new HashMap<>(peerPublicKeys);
     }
 
-    
+    private final Map<String, PublicKey> peerPublicKeys;
+
+    public PublicKey getPeerPublicKey(String peerId) {
+        return peerPublicKeys.get(peerId);
+    }
 
     public void setMessageListener(MessageListener listener) {
         this.listener = listener;
     }
-    
+
     /** Start the receive loop and initiate handshakes with all peers. */
     public void start() {
         receiveThread = new Thread(this::receiveLoop, "LinkManager-Receive");
@@ -79,16 +90,29 @@ public class LinkManager {
     private void receiveLoop() {
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                byte[] raw = fll.deliver();
-                if (raw == null) continue;
+                FairLossLink.ReceivedPacket received = fll.deliver();
+                if (received == null)
+                    continue;
 
-                Message msg = Message.parseFrom(raw);
+                Message msg = Message.parseFrom(received.data());
 
                 String senderId = msg.getSenderId();
                 AuthenticatedPerfectLink apl = apls.get(senderId);
                 if (apl == null) {
-                    LOGGER.fine("Message from unknown sender: " + senderId);
-                    continue;
+                    // Dynamically create an APL for new peers (e.g. clients) if we have their key
+                    PublicKey senderKey = peerPublicKeys.get(senderId);
+                    if (senderKey == null) {
+                        LOGGER.warning(
+                                "[LinkManager] Message from unknown/untrusted sender: " + senderId + " - dropping");
+                        continue;
+                    }
+                    // Register the sender's real network address so HANDSHAKE_ACK can be routed
+                    // back
+                    fll.registerPeer(senderId, received.address(), received.port());
+                    LOGGER.info("[LinkManager] Creating dynamic APL for new peer: " + senderId
+                            + " at " + received.address() + ":" + received.port());
+                    apl = new AuthenticatedPerfectLink(sl, selfId, senderId, identityKeyPair, senderKey);
+                    apls.put(senderId, apl);
                 }
 
                 byte[] delivered = apl.deliver(msg);
@@ -96,7 +120,8 @@ public class LinkManager {
                     listener.onMessage(senderId, delivered);
                 }
             } catch (Exception e) {
-                if (Thread.currentThread().isInterrupted()) break;
+                if (Thread.currentThread().isInterrupted())
+                    break;
                 LOGGER.log(Level.WARNING, "Error in receive loop", e);
             }
         }

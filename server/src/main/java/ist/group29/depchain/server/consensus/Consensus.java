@@ -14,7 +14,11 @@ import ist.group29.depchain.network.ConsensusMessages.CommitMessage;
 import ist.group29.depchain.network.ConsensusMessages.DecideMessage;
 import ist.group29.depchain.network.ConsensusMessages.SyncRequest;
 import ist.group29.depchain.network.ConsensusMessages.SyncResponse;
+import ist.group29.depchain.client.ClientMessages.ClientRequest;
+import ist.group29.depchain.client.ClientMessages.ClientResponse;
 import ist.group29.depchain.server.crypto.CryptoManager;
+import ist.group29.depchain.common.crypto.CryptoUtils;
+import java.security.PublicKey;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -36,9 +40,9 @@ public class Consensus implements MessageListener {
 
     private final String selfId;
     private final List<String> sortedNodeIds;
-    private final int n; 
-    private final int f; 
-    private final int quorum; 
+    private final int n;
+    private final int f;
+    private final int quorum;
     private final LinkManager linkManager;
     private final DecideListener decideListener;
     private CryptoManager cryptoManager;
@@ -59,6 +63,17 @@ public class Consensus implements MessageListener {
 
     private volatile HotStuffNode currentProposal = null;
 
+    // Set when NEW-VIEW quorum is reached but no client request is available yet.
+    // Allows triggerProposal() to use the correct highQC when a request arrives
+    // later.
+    private QuorumCertificate pendingHighQC = null;
+
+    // Buffer for verified client requests waiting to be proposed
+    private final Queue<ClientRequestEntry> clientRequestBuffer = new ConcurrentLinkedQueue<>();
+
+    private record ClientRequestEntry(String clientId, ClientRequest request) {
+    }
+
     private final ScheduledExecutorService pacemaker = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "Pacemaker");
         t.setDaemon(true);
@@ -67,7 +82,7 @@ public class Consensus implements MessageListener {
 
     private ScheduledFuture<?> viewTimer = null;
     private long timeoutMs = INITIAL_TIMEOUT_MS;
-    
+
     private int lastVotedPrepareView = 0;
 
     private ByteString lastExecutedNodeHash = ByteString.copyFrom(HotStuffNode.genesis().getNodeHash());
@@ -75,6 +90,7 @@ public class Consensus implements MessageListener {
     // Buffers a PREPARE message while waiting for a sync response.
     private record PendingPrepare(String senderId, PrepareMessage msg, int view) {
     }
+
     private volatile PendingPrepare pendingPrepare = null;
 
     public Consensus(String selfId, List<String> allNodeIds,
@@ -124,15 +140,10 @@ public class Consensus implements MessageListener {
      * arrives.
      */
     @Override
-    public void onMessage(String senderId, byte[] raw) {
+    public void onMessage(String senderId, byte[] payload) {
         try {
-            ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
+            ConsensusMessage msg = ConsensusMessage.parseFrom(payload);
             int msgView = msg.getViewNumber();
-
-            if (msgView < curView - 1) {
-                LOG.fine("[Consensus] Ignoring stale message from view " + msgView);
-                return;
-            }
 
             switch (msg.getTypeCase()) {
                 case NEW_VIEW -> onNewView(senderId, msg.getNewView(), msgView);
@@ -143,53 +154,196 @@ public class Consensus implements MessageListener {
                 case DECIDE -> onDecide(senderId, msg.getDecide(), msgView);
                 case SYNC_REQUEST -> onSyncRequest(senderId, msg.getSyncRequest());
                 case SYNC_RESPONSE -> onSyncResponse(senderId, msg.getSyncResponse());
+                case TYPE_NOT_SET -> {
+                    // Protobuf happily parses foreign messages as empty — try as ClientRequest
+                    try {
+                        ClientRequest clientReq = ClientRequest.parseFrom(payload);
+                        if (!clientReq.getValue().isEmpty()) {
+                            onClientRequest(senderId, clientReq);
+                        } else {
+                            LOG.fine("[Consensus] Ignoring unidentified message from " + senderId);
+                        }
+                    } catch (InvalidProtocolBufferException e2) {
+                        LOG.fine("[Consensus] Unrecognised message from " + senderId);
+                    }
+                }
                 default -> LOG.warning("[Consensus] Unknown message type from " + senderId);
             }
         } catch (InvalidProtocolBufferException e) {
-            LOG.log(Level.WARNING, "[Consensus] Failed to parse ConsensusMessage", e);
+            // Already a parse failure — try ClientRequest as last resort
+            try {
+                ClientRequest clientReq = ClientRequest.parseFrom(payload);
+                onClientRequest(senderId, clientReq);
+            } catch (InvalidProtocolBufferException e2) {
+                LOG.log(Level.WARNING, "[Consensus] Failed to parse message from " + senderId, e);
+            }
+        }
+    }
+
+    private synchronized void onClientRequest(String clientId, ClientRequest req) {
+        LOG.info("[Consensus] Received ClientRequest from " + clientId);
+
+        // 1. Verify Signature
+        try {
+            PublicKey clientPubKey = linkManager.getPeerPublicKey(clientId);
+            if (clientPubKey == null) {
+                LOG.warning("[Consensus] Ignoring request from unknown client: " + clientId);
+                return;
+            }
+
+            boolean valid = CryptoUtils.verify(clientPubKey, req.getSignature().toByteArray(),
+                    CryptoUtils.toBytes(req.getOp().name()),
+                    CryptoUtils.toBytes(req.getValue()),
+                    CryptoUtils.toBytes(req.getTimestamp()));
+
+            if (!valid) {
+                LOG.warning("[Consensus] Invalid signature on request from client: " + clientId);
+                return;
+            }
+
+            // 2. Buffer the request
+            clientRequestBuffer.add(new ClientRequestEntry(clientId, req));
+            LOG.info("[Consensus] Buffered request from " + clientId + ". Buffer size: " + clientRequestBuffer.size());
+
+            // Proactively trigger a proposal if we are the leader and idling
+            triggerProposal();
+
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "[Consensus] Error verifying client request", e);
         }
     }
 
     /**
      * Handle an incoming NEW-VIEW message.
      */
-    private synchronized void onNewView(String senderId, NewViewMessage msg, int targetView) {
-        if (!isLeader(targetView))
-            return;
-        storeNewView(senderId, targetView, msg);
+    private synchronized void onNewView(String senderId, NewViewMessage msg, int view) {
+        LOG.info("[Consensus] Received NEW-VIEW from " + senderId + " for view " + view);
+        newViewAccumulator.computeIfAbsent(view, k -> new ConcurrentHashMap<>()).put(senderId, msg);
 
-        Map<String, NewViewMessage> received = newViewAccumulator.get(targetView);
-        if (received == null || received.size() < quorum)
+        Map<String, NewViewMessage> newViewMessages = newViewAccumulator.get(view);
+        if (newViewMessages == null || newViewMessages.size() < quorum)
             return;
 
-        QuorumCertificate highQC = QuorumCertificate.genesisQC();
-        for (NewViewMessage nv : received.values()) {
+        if (view != curView) {
+            LOG.fine("[Consensus] Quorum reached for old view " + view + " - ignoring as we are in " + curView);
+            return;
+        }
+
+        LOG.info("[Consensus] Reached NEW-VIEW quorum for view " + view + "! Proposing...");
+
+        // Extract the QC with the highest view number from all NEW-VIEW messages
+        QuorumCertificate highQC = QuorumCertificate.genesisQC(); // Initialize with genesisQC
+        for (NewViewMessage nv : newViewMessages.values()) {
             QuorumCertificate qc = new QuorumCertificate(nv.getJustify());
             if (qc.getViewNumber() > highQC.getViewNumber()) {
                 highQC = qc;
             }
         }
+        newViewAccumulator.remove(view); // Clear messages for this view after processing
 
-        HotStuffNode parentNode = new HotStuffNode(
+        // Step 6: Only propose if there is a real client request pending.
+        // If empty, save the highQC so triggerProposal() can use it when a request
+        // arrives.
+        ClientRequestEntry entry = clientRequestBuffer.poll();
+        if (entry == null) {
+            LOG.fine("[Consensus] Leader has no pending request in view " + view + " - saving highQC and waiting...");
+            pendingHighQC = highQC; // ← key fix: preserve highQC for triggerProposal
+            return;
+        }
+
+        String command = entry.request().getValue();
+        String clientId = entry.clientId();
+        long timestamp = entry.request().getTimestamp();
+        LOG.info("[Consensus] Proposing client request: " + command + " from " + clientId);
+
+        // Algorithm 2, Line 5: node = createLeaf(highQC.node, cmd, view)
+        HotStuffNode proposed = new HotStuffNode(
                 ConsensusMessages.HotStuffNode.newBuilder()
-                        .setNodeHash(ByteString.copyFrom(highQC.getNodeHash()))
+                        .setParentHash(com.google.protobuf.ByteString.copyFrom(highQC.getNodeHash()))
+                        .setCommand(command)
+                        .setViewNumber(view)
+                        .setClientId(clientId)
+                        .setTimestamp(timestamp)
+                        .setNodeHash(com.google.protobuf.ByteString.copyFrom(
+                                CryptoUtils.computeHash(highQC.getNodeHash(), command, view)))
                         .build());
-        String command = "cmd-view-" + targetView;
-        currentProposal = parentNode.createLeaf(command, targetView);
-        blockStore.put(ByteString.copyFrom(currentProposal.getNodeHash()), currentProposal);
-        LOG.info("[Consensus] Leader view " + targetView + " - proposing: " + currentProposal);
 
-        ConsensusMessage prepare = ConsensusMessage.newBuilder()
-                .setViewNumber(targetView)
-                .setPrepare(PrepareMessage.newBuilder()
-                        .setNode(currentProposal.getProto())
-                        .setJustify(highQC.getProto())
-                        .build())
+        this.currentProposal = proposed;
+        storeBlock(proposed);
+
+        // Algorithm 2, Line 6: broadcast PREPARE(node, highQC, view)
+        PrepareMessage prepare = PrepareMessage.newBuilder()
+                .setNode(proposed.getProto())
+                .setJustify(highQC.getProto())
                 .build();
 
-        linkManager.broadcast(prepare.toByteArray());
+        linkManager.broadcast(ConsensusMessage.newBuilder()
+                .setViewNumber(view)
+                .setPrepare(prepare)
+                .build().toByteArray());
 
-        onPrepare(selfId, prepare.getPrepare(), targetView);
+        // Leader also "receives" its own proposal
+        onPrepare(selfId, prepare, view);
+    }
+
+    /**
+     * Proactively trigger a proposal if we are the leader and have a pending
+     * request.
+     * Called when a new request arrives from a client.
+     */
+    public synchronized void triggerProposal() {
+        if (!isLeader(curView))
+            return;
+        if (currentProposal != null)
+            return; // Already have a proposal in flight for this view
+
+        // Use the highQC saved when NEW-VIEW quorum was reached (accumulator may
+        // already be cleared)
+        QuorumCertificate highQC = pendingHighQC;
+        if (highQC == null) {
+            // Fall back to checking the accumulator (quorum not yet reached)
+            Map<String, NewViewMessage> received = newViewAccumulator.get(curView);
+            if (received == null || received.size() < quorum)
+                return;
+            highQC = QuorumCertificate.genesisQC();
+            for (NewViewMessage nv : received.values()) {
+                QuorumCertificate qc = new QuorumCertificate(nv.getJustify());
+                if (qc.getViewNumber() > highQC.getViewNumber())
+                    highQC = qc;
+            }
+        }
+
+        ClientRequestEntry entry = clientRequestBuffer.poll();
+        if (entry == null)
+            return; // No pending requests
+
+        String command = entry.request().getValue();
+        String clientId = entry.clientId();
+        long timestamp = entry.request().getTimestamp();
+
+        currentProposal = new HotStuffNode(
+                ConsensusMessages.HotStuffNode.newBuilder()
+                        .setParentHash(com.google.protobuf.ByteString.copyFrom(highQC.getNodeHash()))
+                        .setCommand(command)
+                        .setClientId(clientId)
+                        .setTimestamp(timestamp)
+                        .setViewNumber(curView)
+                        .build());
+
+        blockStore.put(ByteString.copyFrom(currentProposal.getNodeHash()), currentProposal);
+        LOG.info("[Consensus] Leader view triggered proactive proposal for view " + curView + ": " + currentProposal);
+
+        PrepareMessage prepare = PrepareMessage.newBuilder()
+                .setNode(currentProposal.getProto())
+                .setJustify(highQC.getProto())
+                .build();
+
+        linkManager.broadcast(ConsensusMessage.newBuilder()
+                .setViewNumber(curView)
+                .setPrepare(prepare)
+                .build().toByteArray());
+
+        onPrepare(selfId, prepare, curView);
     }
 
     /**
@@ -274,7 +428,7 @@ public class Consensus implements MessageListener {
             List<Integer> participants = new ArrayList<>();
             for (Map.Entry<String, VoteMessage> entry : votes.entrySet()) {
                 shares.add(entry.getValue().getSignatureShare().toByteArray());
-                participants.add(sortedNodeIds.indexOf(entry.getKey()));
+                participants.add(sortedNodeIds.indexOf(entry.getKey()) + 1);
             }
 
             byte[] combinedSig = cryptoManager.aggregateSignatureShares(dataToSign, shares, participants);
@@ -408,7 +562,7 @@ public class Consensus implements MessageListener {
      * Liveness rule: if the justify QC is fresher than lockedQC, accept anyway
      */
     private boolean safeNode(HotStuffNode node, QuorumCertificate qc) {
-      
+
         boolean safetyRule = extendsFrom(node, lockedQC.getNodeHash());
         boolean livenessRule = qc.getViewNumber() > lockedQC.getViewNumber();
         LOG.fine("[Consensus] safeNode: safety=" + safetyRule + " liveness=" + livenessRule);
@@ -420,7 +574,7 @@ public class Consensus implements MessageListener {
      * ancestorHash by walking the blockStore hash chain backwards.
      */
     public boolean extendsFrom(HotStuffNode node, byte[] ancestorHash) {
- 
+
         if (Arrays.equals(ancestorHash, HotStuffNode.genesis().getNodeHash())) {
             return true;
         }
@@ -429,16 +583,15 @@ public class Consensus implements MessageListener {
             return true;
         }
 
-
         byte[] currentHash = node.getProto().getParentHash().toByteArray();
-        for (int depth = 0; depth < 1000; depth++) { 
+        for (int depth = 0; depth < 1000; depth++) {
             if (Arrays.equals(currentHash, ancestorHash)) {
                 return true;
             }
 
             HotStuffNode current = blockStore.get(ByteString.copyFrom(currentHash));
             if (current == null) {
-                return false; 
+                return false;
             }
 
             currentHash = current.getProto().getParentHash().toByteArray();
@@ -450,6 +603,7 @@ public class Consensus implements MessageListener {
     private void advanceView() {
         curView++;
         currentProposal = null;
+        pendingHighQC = null; // Reset so next view's leader computes a fresh highQC
         LOG.info("[Consensus] Advancing to view " + curView + " - leader: " + leader(curView));
 
         // Clean up old accumulator entries to prevent unbounded memory growth.
@@ -477,7 +631,6 @@ public class Consensus implements MessageListener {
     private void cancelTimer() {
         if (viewTimer != null) {
             viewTimer.cancel(false);
-            viewTimer = null;
         }
     }
 
@@ -498,7 +651,7 @@ public class Consensus implements MessageListener {
                         .build())
                 .build();
         if (nextLeader.equals(selfId)) {
-            storeNewView(selfId, targetView, msg.getNewView());
+            onNewView(selfId, msg.getNewView(), targetView);
         } else {
             linkManager.send(nextLeader, msg.toByteArray());
         }
@@ -534,12 +687,6 @@ public class Consensus implements MessageListener {
         }
     }
 
-    private void storeNewView(String senderId, int targetView, NewViewMessage msg) {
-        newViewAccumulator
-                .computeIfAbsent(targetView, v -> new ConcurrentHashMap<>())
-                .put(senderId, msg);
-    }
-
     /**
      * Walk the committed branch from decidedNode back to lastExecutedNodeHash,
      * then execute all un-executed commands in forward order (root → leaf).
@@ -548,7 +695,7 @@ public class Consensus implements MessageListener {
         List<HotStuffNode> toExecute = new ArrayList<>();
         HotStuffNode current = decidedNode;
 
-        int maxDepth = 1000; 
+        int maxDepth = 1000;
         while (current != null && maxDepth-- > 0
                 && !ByteString.copyFrom(current.getNodeHash()).equals(lastExecutedNodeHash)) {
             if (!current.getCommand().isEmpty()) {
@@ -559,9 +706,24 @@ public class Consensus implements MessageListener {
 
         Collections.reverse(toExecute);
         for (HotStuffNode node : toExecute) {
-            decideListener.onDecide(node.getCommand(), node.getViewNumber());
-        }
+            LOG.info(
+                    "[Consensus] DECIDE View " + decidedNode.getViewNumber() + " finalized node: " + node.getCommand());
 
+            // Execute the upcall to Service (application layer)
+            decideListener.onDecide(node.getCommand(), node.getViewNumber(), node.getClientId(), node.getTimestamp());
+
+            // Step 6: Send response back to the client
+            if (!node.getClientId().equals("system") && !node.getClientId().equals("genesis")) {
+                ClientResponse resp = ClientResponse.newBuilder()
+                        .setStatus("SUCCESS")
+                        .setValue(node.getCommand())
+                        .setTimestamp(node.getTimestamp())
+                        .build();
+
+                LOG.info("[Consensus] Sending ClientResponse to " + node.getClientId());
+                linkManager.send(node.getClientId(), resp.toByteArray());
+            }
+        }
         lastExecutedNodeHash = ByteString.copyFrom(decidedNode.getNodeHash());
     }
 
@@ -614,7 +776,7 @@ public class Consensus implements MessageListener {
         linkManager.send(senderId, resp.toByteArray());
         LOG.info("[Consensus] Sent " + nodes.size() + " blocks to " + senderId + " in sync response");
     }
-    
+
     /**
      * Handle an incoming SyncResponse: store all received blocks in the
      * blockStore, then re-process any buffered PREPARE message.

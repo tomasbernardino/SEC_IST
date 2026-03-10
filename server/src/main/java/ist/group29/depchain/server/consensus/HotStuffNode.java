@@ -20,6 +20,8 @@ public class HotStuffNode {
                         .setParentHash(ByteString.copyFrom(zeroHash))
                         .setCommand("")
                         .setViewNumber(0)
+                        .setClientId("genesis")
+                        .setTimestamp(0)
                         .setNodeHash(ByteString.copyFrom(CryptoUtils.computeHash(zeroHash, "", 0)))
                         .build());
     }
@@ -34,13 +36,15 @@ public class HotStuffNode {
         return GENESIS;
     }
 
-    public HotStuffNode createLeaf(String command, int viewNumber) {
+    public HotStuffNode createLeaf(String command, int viewNumber, String clientId, long timestamp) {
         byte[] parentHash = proto.getNodeHash().toByteArray();
         byte[] nodeHash = CryptoUtils.computeHash(parentHash, command, viewNumber);
         ConsensusMessages.HotStuffNode child = ConsensusMessages.HotStuffNode.newBuilder()
                 .setParentHash(ByteString.copyFrom(parentHash))
                 .setCommand(command)
                 .setViewNumber(viewNumber)
+                .setClientId(clientId)
+                .setTimestamp(timestamp)
                 .setNodeHash(ByteString.copyFrom(nodeHash))
                 .build();
         return new HotStuffNode(child);
@@ -63,6 +67,14 @@ public class HotStuffNode {
     /** The view number in which this node was proposed */
     public int getViewNumber() {
         return proto.getViewNumber();
+    }
+
+    public String getClientId() {
+        return proto.getClientId();
+    }
+
+    public long getTimestamp() {
+        return proto.getTimestamp();
     }
 
     @Override

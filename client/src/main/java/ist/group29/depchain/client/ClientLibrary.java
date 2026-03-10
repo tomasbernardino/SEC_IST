@@ -3,10 +3,11 @@ package ist.group29.depchain.client;
 import ist.group29.depchain.common.network.LinkManager;
 import ist.group29.depchain.common.network.MessageListener;
 import ist.group29.depchain.common.network.ProcessInfo;
-import ist.group29.depchain.network.NetworkMessages.ClientRequest;
-import ist.group29.depchain.network.NetworkMessages.ClientResponse;
+import ist.group29.depchain.client.ClientMessages.ClientRequest;
+import ist.group29.depchain.client.ClientMessages.ClientResponse;
+import ist.group29.depchain.common.crypto.CryptoUtils;
 
-import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.util.Map;
@@ -17,20 +18,23 @@ import java.util.logging.Logger;
 
 public class ClientLibrary implements MessageListener {
     private static final Logger LOG = Logger.getLogger(ClientLibrary.class.getName());
-    
+
     private final LinkManager linkManager;
     private final int quorumSize; // f + 1
-    
+
     // Key: the string sent; Value: set of node IDs that sent a DECIDED confirmation
     private final Map<String, Set<String>> pendingRequests = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<Void>> futures = new ConcurrentHashMap<>();
+    private final KeyPair myKeys;
 
     public ClientLibrary(ProcessInfo self, Map<String, ProcessInfo> nodes,
-                          KeyPair myKeys, Map<String, PublicKey> nodeKeys) throws Exception {
-        
-        int f = nodes.size() / 3; 
+            KeyPair myKeys, Map<String, PublicKey> nodeKeys) throws Exception {
+
+        int f = nodes.size() / 3;
         this.quorumSize = f + 1;
-        this.linkManager = new LinkManager(self, nodes, myKeys, nodeKeys, this);
+        this.myKeys = myKeys;
+        this.linkManager = new LinkManager(self, nodes, myKeys, nodeKeys);
+        this.linkManager.setMessageListener(this);
     }
 
     public void start() {
@@ -43,15 +47,31 @@ public class ClientLibrary implements MessageListener {
         futures.put(value, future);
         pendingRequests.put(value, ConcurrentHashMap.newKeySet());
 
-        // Build the ClientRequest (protobuf)
-        ClientRequest req = ClientRequest.newBuilder()
-                .setOp(ClientRequest.Operation.APPEND)
-                .setValue(value)
-                .setTimestamp(System.currentTimeMillis())
-                .build();
-        
-        // Wrap proto in top level Message for linkManager
-        linkManager.broadcast(req.toByteArray());
+        long timestamp = System.currentTimeMillis();
+
+        try {
+            // Build the ClientRequest (protobuf)
+            ClientRequest.Builder reqBuilder = ClientRequest.newBuilder()
+                    .setOp(ClientRequest.Operation.APPEND)
+                    .setValue(value)
+                    .setTimestamp(timestamp);
+
+            // Sign: (op, value, timestamp)
+            byte[] signature = CryptoUtils.sign(myKeys.getPrivate(),
+                    CryptoUtils.toBytes(ClientRequest.Operation.APPEND.name()),
+                    CryptoUtils.toBytes(value),
+                    CryptoUtils.toBytes(timestamp));
+
+            ClientRequest req = reqBuilder.setSignature(com.google.protobuf.ByteString.copyFrom(signature)).build();
+
+            LOG.fine("[Client] Sending signed request for: " + value);
+            // Wrap proto in top level Message for linkManager
+            linkManager.broadcast(req.toByteArray());
+
+        } catch (GeneralSecurityException e) {
+            LOG.severe("Failed to sign client request: " + e.getMessage());
+            future.completeExceptionally(e);
+        }
 
         return future;
     }

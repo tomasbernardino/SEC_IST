@@ -38,21 +38,3 @@ message DataMessage {
 message AckMessage {
     bytes mac = 1;  
 }
-
-
-// --- Client Library Messages ---
-
-message ClientRequest {
-    enum Operation {
-        APPEND = 0;
-    }
-    Operation op = 1;
-    string value = 2; // the command
-    int64 timestamp = 3;
-}
-
-message ClientResponse {
-    string status = 1;
-    string value = 2; 
-    int64 timestamp = 3;
-}

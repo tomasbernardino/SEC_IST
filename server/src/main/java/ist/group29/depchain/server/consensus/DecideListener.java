@@ -14,5 +14,5 @@ public interface DecideListener {
      * Called once per decided view, exactly when a valid DECIDE message
      * carrying a commitQC is received and verified.
      */
-    void onDecide(String command, int viewNumber);
+    void onDecide(String command, int viewNumber, String clientId, long timestamp);
 }

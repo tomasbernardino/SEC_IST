@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+option java_package = "ist.group29.depchain.client";
+option java_outer_classname = "ClientMessages";
+
+// --- Client Library Messages ---
+
+message ClientRequest {
+    enum Operation {
+        APPEND = 0;
+    }
+    Operation op      = 1;
+    string    value   = 2; // the command
+    int64     timestamp = 3;
+    bytes     signature = 4; // RSA signature of (op, value, timestamp)
+}
+
+message ClientResponse {
+    string status    = 1;
+    string value     = 2; 
+    int64  timestamp = 3;
+}

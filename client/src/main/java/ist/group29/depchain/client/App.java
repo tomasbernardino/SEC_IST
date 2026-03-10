@@ -12,9 +12,18 @@ import java.net.InetAddress;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.PrivateKey;
+import java.util.logging.Logger;
+import java.util.logging.Handler;
+import java.util.logging.Level;
 
 public class App {
     public static void main(String[] args) throws Exception {
+        // Silence default logger output on the client terminal for a clean prompt
+        Logger rootLogger = Logger.getLogger("");
+        for (Handler handler : rootLogger.getHandlers()) {
+            handler.setLevel(Level.WARNING);
+        }
+
         if (args.length < 4) {
             System.out.println("Usage: App <clientId> <hosts.config> <keysDir> <password>");
             return;
@@ -41,14 +50,14 @@ public class App {
             try {
                 // Construct the path to node's .p12 file
                 Path nodeKeyPath = keysDir.resolve(nodeId + ".p12");
-                
+
                 // Load the public key using the nodeId as the alia
                 PublicKey pk = KeyStoreManager.loadPublicKey(nodeKeyPath, nodeId, password);
-                
+
                 nodeKeys.put(nodeId, pk);
             } catch (Exception e) {
                 System.err.println("Failed to load public key for " + nodeId + ": " + e.getMessage());
-                throw e; 
+                throw e;
             }
         }
 
@@ -64,9 +73,11 @@ public class App {
 
         while (true) {
             System.out.print("> ");
-            if (!scanner.hasNextLine()) break;
+            if (!scanner.hasNextLine())
+                break;
             String input = scanner.nextLine();
-            if (input.equalsIgnoreCase("exit")) break;
+            if (input.equalsIgnoreCase("exit"))
+                break;
 
             System.out.println("Appending to blockchain...");
             try {

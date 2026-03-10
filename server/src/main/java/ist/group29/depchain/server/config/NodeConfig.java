@@ -43,9 +43,29 @@ public record NodeConfig(
 
         Path truststorePath = keysDir.resolve("truststore.p12");
         Map<String, PublicKey> peerPublicKeys = new HashMap<>();
-        for (String peerId : peers.keySet()) {
-            PublicKey pubKey = KeyStoreManager.loadPublicKey(truststorePath, peerId, password);
-            peerPublicKeys.put(peerId, pubKey);
+
+        // Load all nodes and clients from the truststore/keys directory
+        // In a real system, we might have a specific clients.config
+        // For Stage 1, we'll try to load any available client-X.p12 public keys
+        for (String id : allNodes.keySet()) {
+            if (!id.equals(selfId)) {
+                PublicKey pubKey = KeyStoreManager.loadPublicKey(truststorePath, id, password);
+                peerPublicKeys.put(id, pubKey);
+            }
+        }
+
+        // Proactively load client keys if they exist in the keys directory
+        try (java.util.stream.Stream<Path> stream = java.nio.file.Files.list(keysDir)) {
+            stream.filter(p -> p.getFileName().toString().startsWith("client-") && p.toString().endsWith(".p12"))
+                    .forEach(p -> {
+                        String clientId = p.getFileName().toString().replace(".p12", "");
+                        try {
+                            PublicKey clientPubKey = KeyStoreManager.loadPublicKey(p, clientId, password);
+                            peerPublicKeys.put(clientId, clientPubKey);
+                        } catch (Exception e) {
+                            // Ignore clients that fail to load
+                        }
+                    });
         }
 
         PublicKey selfPublicKey = KeyStoreManager.loadPublicKey(truststorePath, selfId, password);
