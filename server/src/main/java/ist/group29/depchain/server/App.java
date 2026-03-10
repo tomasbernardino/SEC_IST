@@ -17,17 +17,6 @@ import java.util.logging.Logger;
  *
  * Example:
  * App node-0 hosts.config keys sec_project_keys
- *
- * Key pre-distribution: For Stage 1, each node generates a
- * fresh RSA key pair on startup. In a real deployment the PKI would be set up
- * offline and the public keys loaded from a trusted directory. The project
- * description states: "blockchain members should use self-generated
- * public/private
- * keys, which are pre-distributed before the start of the system."
- * In Stage 1 we approximate this with in-process key exchange for testing.
- *
- * Note: This class will be significantly extended in Stage 2 to handle
- * client connections and transaction processing.
  */
 public class App {
 
@@ -44,25 +33,20 @@ public class App {
         Path keysDir = Path.of(args[2]);
         char[] password = args[3].toCharArray();
 
-        // Load configuration (Network + Keys) from disk
         LOG.info("[App] Loading configuration for " + selfId + "...");
         NodeConfig config = NodeConfig.load(selfId, configPath, keysDir, password);
 
-        // Wire up the layers
         Service service = new Service();
 
-        // All IDs (self + peers) for leader rotation
         List<String> allNodeIds = new ArrayList<>(config.peers().keySet());
         allNodeIds.add(selfId);
 
-        // Network layer (no callback required at construction)
         LinkManager linkManager = new LinkManager(
             config.self(), config.peers(),
             config.identityKeyPair(), config.peerPublicKeys());
 
-        // Consensus layer
         Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service, keysDir.toString());
-        // Wire the layers together, then start the network loop
+        
         linkManager.setMessageListener(consensus::onMessage);
 
         linkManager.start();
@@ -76,7 +60,6 @@ public class App {
         LOG.info("[App] Starting HotStuff consensus view 1...");
         consensus.start("cmd-initial");
 
-        // Keep running
         Thread.currentThread().join();
     }
 }

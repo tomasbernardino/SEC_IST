@@ -3,12 +3,9 @@ package ist.group29.depchain.server.crypto;
 import ist.group29.depchain.server.crypto.threshsig.GroupKey;
 import ist.group29.depchain.server.crypto.threshsig.KeyShare;
 import ist.group29.depchain.server.crypto.threshsig.SigShare;
-import ist.group29.depchain.server.crypto.threshsig.Verifier;
 import java.io.File;
 import java.io.FileInputStream;
 import java.util.List;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.math.BigInteger;
 import java.io.ObjectInputStream;
 
@@ -65,14 +62,6 @@ public class CryptoManager {
             shares[i] = new SigShare(participantIds.get(i), sharesData.get(i));
         }
 
-        // In Shoup's RSA Threshold scheme, the final signature is aggregated
-        // using Lagrange interpolation in the exponent. Although the library's
-        // SigShare.verify() method contains this logic, it is designed to return
-        // a boolean rather than the raw signature bytes.
-        // We therefore use the extracted combineShares() method to produce the
-        // aggregated RSA signature (x^d mod n) which can then be verified by
-        // all replicas and clients using the group public key.
-
         return combineShares(shares);
     }
 
@@ -108,9 +97,6 @@ public class CryptoManager {
         BigInteger mod = groupKey.getModulus();
         BigInteger x = (new BigInteger(data)).mod(mod);
         BigInteger delta = privateShare.getDelta();
-
-        // Shoup verification: w^e = x^(delta^2 * 4) mod n
-        // Where w is the combined signature.
 
         BigInteger eprime = delta.multiply(delta).shiftLeft(2);
         BigInteger xeprime = x.modPow(eprime, mod);
