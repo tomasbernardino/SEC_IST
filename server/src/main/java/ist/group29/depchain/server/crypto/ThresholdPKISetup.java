@@ -1,47 +1,60 @@
 package ist.group29.depchain.server.crypto;
 
-import com.weavechain.sig.ThresholdSigEd25519;
-import com.weavechain.sig.ThresholdSigEd25519Params;
+import ist.group29.depchain.server.crypto.threshsig.Dealer;
+import ist.group29.depchain.server.crypto.threshsig.GroupKey;
+import ist.group29.depchain.server.crypto.threshsig.KeyShare;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.ObjectOutputStream;
 
 /**
  * Utility to generate and distribute Threshold Signature shares for DepChain.
- * It acts as a trusted dealer, splitting an Ed25519 private key into n shares,
- * requiring any t shares to reconstruct a valid signature.
+ * It uses the threshsig library to generate RSA-based threshold keys.
  */
 public class ThresholdPKISetup {
 
     public static void main(String[] args) throws Exception {
         int n = 4;
-        int t = 3; // Quorum is n - f for n=4 -> 3
+        int k = 3; // Quorum is k=3 for n=4
+        int keysize = 2048;
 
-        System.out.println("[Threshold PKI] Generating keys for n=" + n + ", t=" + t);
+        // Use the first argument as keys directory if provided, otherwise default to
+        // "keys"
+        String keysPath = (args.length > 0) ? args[0] : "keys";
+        File keysDir = new File(keysPath);
 
-        ThresholdSigEd25519 tsig = new ThresholdSigEd25519(t, n);
-        ThresholdSigEd25519Params params = tsig.generate();
+        System.out.println("[Threshold PKI] Manual Setup Utility");
+        System.out.println("Running this will re-generate all threshold keys. Use with CAUTION.");
+        System.out.println(
+                "[Threshold PKI] Generating RSA keys for n=" + n + ", k=" + k + " into: " + keysDir.getAbsolutePath());
 
-        File keysDir = new File("keys");
+        Dealer dealer = new Dealer(keysize);
+        dealer.generateKeys(k, n);
+
+        GroupKey groupKey = dealer.getGroupKey();
+        KeyShare[] shares = dealer.getShares();
+
         if (!keysDir.exists()) {
-            keysDir.mkdirs();
+            boolean created = keysDir.mkdirs();
+            if (created)
+                System.out.println("Created directory: " + keysDir.getAbsolutePath());
         }
 
-        // Save the single aggregate public key
+        // Save the group public key
         File pubFile = new File(keysDir, "threshold_public.key");
-        try (FileOutputStream fos = new FileOutputStream(pubFile)) {
-            fos.write(params.getPublicKey());
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(pubFile))) {
+            oos.writeObject(groupKey);
         }
-        System.out.println("Saved " + pubFile.getName());
+        System.out.println("Saved " + pubFile.getName() + " to " + keysDir.getPath());
 
         // Save the private shares for each node
         for (int i = 0; i < n; i++) {
             File shareFile = new File(keysDir, "node-" + i + "-threshold.key");
-            try (FileOutputStream fos = new FileOutputStream(shareFile)) {
-                // Scalar to byte array
-                fos.write(params.getPrivateShares().get(i).toByteArray());
+            try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(shareFile))) {
+                oos.writeObject(shares[i]);
             }
-            System.out.println("Saved " + shareFile.getName());
+            System.out.println("Saved " + shareFile.getName() + " to " + keysDir.getPath());
         }
 
         System.out.println("[Threshold PKI] Setup complete.");

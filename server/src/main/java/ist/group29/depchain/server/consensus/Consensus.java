@@ -14,17 +14,12 @@ import ist.group29.depchain.network.ConsensusMessages.CommitMessage;
 import ist.group29.depchain.network.ConsensusMessages.DecideMessage;
 import ist.group29.depchain.network.ConsensusMessages.SyncRequest;
 import ist.group29.depchain.network.ConsensusMessages.SyncResponse;
-import com.weavechain.curve25519.CompressedEdwardsY;
-import com.weavechain.curve25519.EdwardsPoint;
-import com.weavechain.curve25519.Scalar;
-import ist.group29.depchain.network.ConsensusMessages.ChallengeMessage;
 import ist.group29.depchain.server.crypto.CryptoManager;
 
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.nio.ByteBuffer;
 
 /**
  * Basic HotStuff consensus engine - Algorithm 2 of the paper.
@@ -82,7 +77,6 @@ public class Consensus implements MessageListener {
     private final LinkManager linkManager;
     private final DecideListener decideListener;
     private CryptoManager cryptoManager;
-    private final Map<Integer, Map<String, Scalar>> rsMemory = new ConcurrentHashMap<>();
 
     // Local block store: maps nodeHash -> HotStuffNode for recursive extendsFrom
     // chain traversal. Required by the safeNode predicate (Algorithm 1, line 26)
@@ -237,7 +231,6 @@ public class Consensus implements MessageListener {
                 case PRE_COMMIT -> onPreCommit(senderId, msg.getPreCommit(), msgView);
                 case COMMIT -> onCommit(senderId, msg.getCommit(), msgView);
                 case DECIDE -> onDecide(senderId, msg.getDecide(), msgView);
-                case CHALLENGE -> onChallenge(senderId, msg.getChallenge(), msgView);
                 case SYNC_REQUEST -> onSyncRequest(senderId, msg.getSyncRequest());
                 case SYNC_RESPONSE -> onSyncResponse(senderId, msg.getSyncResponse());
                 default -> LOG.warning("[Consensus] Unknown message type from " + senderId);
@@ -384,150 +377,67 @@ public class Consensus implements MessageListener {
             return;
 
         String phase = vote.getPhase();
-        boolean isRound1 = !vote.getRPoint().isEmpty();
-        boolean isRound2 = !vote.getScalarSignature().isEmpty();
-
-        String mapKey = phase + (isRound1 ? "-R1" : "-R2");
-
-        PhaseRound key = new PhaseRound(view, mapKey);
+        PhaseRound key = new PhaseRound(view, phase);
         voteAccumulator
                 .computeIfAbsent(key, k -> new ConcurrentHashMap<>())
                 .put(senderId, vote);
 
         Map<String, VoteMessage> votes = voteAccumulator.get(key);
-        LOG.info("[Consensus] Vote from " + senderId + " for phase=" + phase + " R1=" + isRound1 + " R2=" + isRound2
+        LOG.info("[Consensus] Vote from " + senderId + " for phase=" + phase
                 + " count=" + votes.size() + "/" + quorum);
         if (votes.size() < quorum)
             return; // not enough yet
 
         try {
+            // We just hit quorum, aggregate signatures and form QC
+            LOG.info("[Consensus] Leader formed QC for phase=" + phase + " view=" + view);
+
             QuorumCertificate dummyQc = QuorumCertificate.create(phase, view, vote.getNodeHash().toByteArray(), null);
-            String toSignStr = Base64.getEncoder().encodeToString(dummyQc.getMessageToSign());
+            byte[] dataToSign = dummyQc.getMessageToSign();
 
-            if (isRound1 && votes.size() == quorum) {
-                // We just hit quorum for Round 1, broadcast Challenge
-                LOG.info("[Consensus] Leader gathered " + quorum + " R_i. Broadcasting Challenge for " + phase
-                        + " view=" + view);
-                List<EdwardsPoint> ris = new ArrayList<>();
-                List<Integer> participants = new ArrayList<>();
-                for (Map.Entry<String, VoteMessage> entry : votes.entrySet()) {
-                    VoteMessage v = entry.getValue();
-                    ris.add(new CompressedEdwardsY(v.getRPoint().toByteArray()).decompress());
-                    // Use authenticated senderId (map key) to find their positional index
-                    int pIndex = sortedNodeIds.indexOf(entry.getKey());
-                    participants.add(pIndex);
+            List<byte[]> shares = new ArrayList<>();
+            List<Integer> participants = new ArrayList<>();
+            for (Map.Entry<String, VoteMessage> entry : votes.entrySet()) {
+                shares.add(entry.getValue().getSignatureShare().toByteArray());
+                participants.add(sortedNodeIds.indexOf(entry.getKey()));
+            }
+
+            byte[] combinedSig = cryptoManager.aggregateSignatureShares(dataToSign, shares, participants);
+            QuorumCertificate qc = QuorumCertificate.create(phase, view, vote.getNodeHash().toByteArray(),
+                    combinedSig);
+
+            switch (phase) {
+                case QuorumCertificate.PREPARE -> {
+                    prepareQC = qc;
+                    ConsensusMessage preCommit = ConsensusMessage.newBuilder()
+                            .setViewNumber(view)
+                            .setPreCommit(PreCommitMessage.newBuilder()
+                                    .setJustify(qc.getProto()).build())
+                            .build();
+                    linkManager.broadcast(preCommit.toByteArray());
+                    onPreCommit(selfId, preCommit.getPreCommit(), view);
                 }
-                EdwardsPoint R = cryptoManager.aggregateRi(ris);
-                Scalar k = cryptoManager.computeChallengeK(R, toSignStr);
-
-                ConsensusMessage challengeMsg = ConsensusMessage.newBuilder()
-                        .setViewNumber(view)
-                        .setChallenge(ChallengeMessage.newBuilder()
-                                .setPhase(phase)
-                                .setViewNumber(view)
-                                .setNodeHash(vote.getNodeHash())
-                                .setAggregatedR(ByteString.copyFrom(R.compress().toByteArray()))
-                                .setChallengeK(ByteString.copyFrom(k.toByteArray()))
-                                .addAllParticipatingNodes(participants)
-                                .build())
-                        .build();
-
-                linkManager.broadcast(challengeMsg.toByteArray());
-                onChallenge(selfId, challengeMsg.getChallenge(), view);
-            } else if (isRound2 && votes.size() == quorum) {
-                // We just hit quorum for Round 2, aggregate signatures and form QC
-                LOG.info("[Consensus] Leader formed QC for phase=" + phase + " view=" + view);
-
-                // Reconstruct R from the R1 accumulator to combine signatures
-                Map<String, VoteMessage> r1Votes = voteAccumulator.get(new PhaseRound(view, phase + "-R1"));
-                List<EdwardsPoint> ris = new ArrayList<>();
-                for (VoteMessage r1v : r1Votes.values()) {
-                    ris.add(new CompressedEdwardsY(r1v.getRPoint().toByteArray()).decompress());
+                case QuorumCertificate.PRE_COMMIT -> {
+                    ConsensusMessage commit = ConsensusMessage.newBuilder()
+                            .setViewNumber(view)
+                            .setCommit(CommitMessage.newBuilder()
+                                    .setJustify(qc.getProto()).build())
+                            .build();
+                    linkManager.broadcast(commit.toByteArray());
+                    onCommit(selfId, commit.getCommit(), view);
                 }
-                EdwardsPoint R = cryptoManager.aggregateRi(ris);
-
-                List<Scalar> shares = new ArrayList<>();
-                for (VoteMessage r2v : votes.values()) {
-                    shares.add(Scalar.fromBits(r2v.getScalarSignature().toByteArray()));
-                }
-
-                byte[] combinedSig = cryptoManager.aggregateSignatureShares(R, shares);
-                QuorumCertificate qc = QuorumCertificate.create(phase, view, vote.getNodeHash().toByteArray(),
-                        combinedSig);
-
-                switch (phase) {
-                    case QuorumCertificate.PREPARE -> {
-                        prepareQC = qc;
-                        ConsensusMessage preCommit = ConsensusMessage.newBuilder()
-                                .setViewNumber(view)
-                                .setPreCommit(PreCommitMessage.newBuilder()
-                                        .setJustify(qc.getProto()).build())
-                                .build();
-                        linkManager.broadcast(preCommit.toByteArray());
-                        onPreCommit(selfId, preCommit.getPreCommit(), view);
-                    }
-                    case QuorumCertificate.PRE_COMMIT -> {
-                        ConsensusMessage commit = ConsensusMessage.newBuilder()
-                                .setViewNumber(view)
-                                .setCommit(CommitMessage.newBuilder()
-                                        .setJustify(qc.getProto()).build())
-                                .build();
-                        linkManager.broadcast(commit.toByteArray());
-                        onCommit(selfId, commit.getCommit(), view);
-                    }
-                    case QuorumCertificate.COMMIT -> {
-                        ConsensusMessage decide = ConsensusMessage.newBuilder()
-                                .setViewNumber(view)
-                                .setDecide(DecideMessage.newBuilder()
-                                        .setJustify(qc.getProto()).build())
-                                .build();
-                        linkManager.broadcast(decide.toByteArray());
-                        onDecide(selfId, decide.getDecide(), view);
-                    }
+                case QuorumCertificate.COMMIT -> {
+                    ConsensusMessage decide = ConsensusMessage.newBuilder()
+                            .setViewNumber(view)
+                            .setDecide(DecideMessage.newBuilder()
+                                    .setJustify(qc.getProto()).build())
+                            .build();
+                    linkManager.broadcast(decide.toByteArray());
+                    onDecide(selfId, decide.getDecide(), view);
                 }
             }
         } catch (Exception e) {
-            LOG.log(Level.SEVERE, "Failed during threshold signing orchestration", e);
-        }
-    }
-
-    private synchronized void onChallenge(String senderId, ChallengeMessage challenge, int view) {
-        if (view != curView)
-            return;
-
-        String phase = challenge.getPhase();
-        Scalar rs = rsMemory.getOrDefault(view, Collections.emptyMap()).get(phase);
-        if (rs == null) {
-            LOG.warning("[Consensus] No rs memory for phase " + phase + " view " + view);
-            return;
-        }
-
-        try {
-            Scalar k = Scalar.fromBits(challenge.getChallengeK().toByteArray());
-            Set<Integer> participants = new TreeSet<>(challenge.getParticipatingNodesList());
-
-            // Generate scalar signature share
-            Scalar si = cryptoManager.computeSignatureShare(rs, k, participants);
-
-            VoteMessage voteR2 = VoteMessage.newBuilder()
-                    .setPhase(phase)
-                    .setNodeHash(challenge.getNodeHash())
-                    .setScalarSignature(ByteString.copyFrom(si.toByteArray()))
-                    .build();
-
-            ConsensusMessage msg = ConsensusMessage.newBuilder()
-                    .setViewNumber(view)
-                    .setVote(voteR2)
-                    .build();
-
-            String currentLeader = leader(view);
-            if (currentLeader.equals(selfId)) {
-                onVote(selfId, msg.getVote(), view);
-            } else {
-                linkManager.send(currentLeader, msg.toByteArray());
-            }
-        } catch (Exception e) {
-            LOG.log(Level.SEVERE, "Failed to compute signature share", e);
+            LOG.log(Level.SEVERE, "Failed during threshold signing aggregation", e);
         }
     }
 
@@ -543,7 +453,7 @@ public class Consensus implements MessageListener {
             return;
 
         QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
-        if (!qc.isValid(cryptoManager.getThresholdPublicKey())) {
+        if (!qc.isValid(cryptoManager)) {
             LOG.warning("[Consensus] PRE-COMMIT has invalid QC in view " + view);
             return;
         }
@@ -570,7 +480,7 @@ public class Consensus implements MessageListener {
             return;
 
         QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
-        if (!qc.isValid(cryptoManager.getThresholdPublicKey())) {
+        if (!qc.isValid(cryptoManager)) {
             LOG.warning("[Consensus] COMMIT has invalid QC in view " + view);
             return;
         }
@@ -600,7 +510,7 @@ public class Consensus implements MessageListener {
         }
 
         QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
-        if (!qc.isValid(cryptoManager.getThresholdPublicKey())) {
+        if (!qc.isValid(cryptoManager)) {
             LOG.warning("[Consensus] DECIDE has invalid QC in view " + view);
             return;
         }
@@ -702,7 +612,6 @@ public class Consensus implements MessageListener {
         if (staleThreshold > 0) {
             voteAccumulator.keySet().removeIf(k -> k.view() < staleThreshold);
             newViewAccumulator.keySet().removeIf(v -> v < staleThreshold);
-            rsMemory.keySet().removeIf(v -> v < staleThreshold);
         }
 
         sendNewView(curView);
@@ -750,19 +659,18 @@ public class Consensus implements MessageListener {
         }
     }
 
-    private void sendVote(String phase, int view, byte[] nodeHash) {
-        try {
-            QuorumCertificate dummyQc = QuorumCertificate.create(phase, view, nodeHash, null);
-            String toSignStr = Base64.getEncoder().encodeToString(dummyQc.getMessageToSign());
+    private synchronized void sendVote(String phase, int view, byte[] nodeHash) {
+        LOG.info("[Consensus] Node " + selfId + " casting vote for phase=" + phase + " view=" + view);
 
-            Scalar rs = cryptoManager.computeRs(toSignStr);
-            rsMemory.computeIfAbsent(view, v -> new ConcurrentHashMap<>()).put(phase, rs);
-            EdwardsPoint rPoint = cryptoManager.computeRiPoint(rs);
+        try {
+            // HotStuff Step 5: Sign the QC we would form (hash + view + phase)
+            QuorumCertificate dummyQc = QuorumCertificate.create(phase, view, nodeHash, null);
+            byte[] signatureShare = cryptoManager.computeSignatureShare(dummyQc.getMessageToSign());
 
             VoteMessage vote = VoteMessage.newBuilder()
                     .setPhase(phase)
                     .setNodeHash(ByteString.copyFrom(nodeHash))
-                    .setRPoint(ByteString.copyFrom(rPoint.compress().toByteArray()))
+                    .setSignatureShare(ByteString.copyFrom(signatureShare))
                     .build();
 
             ConsensusMessage msg = ConsensusMessage.newBuilder()
@@ -777,7 +685,7 @@ public class Consensus implements MessageListener {
                 linkManager.send(currentLeader, msg.toByteArray());
             }
         } catch (Exception e) {
-            LOG.log(Level.SEVERE, "Failed to start Round 1 of signing", e);
+            LOG.log(Level.SEVERE, "Failed to send vote", e);
         }
     }
 

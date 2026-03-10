@@ -48,17 +48,7 @@ message VoteMessage {
     string phase            = 1;  // "prepare", "pre-commit", or "commit"
     // view_number removed: redundant with ConsensusMessage.view_number (envelope)
     bytes  node_hash        = 3;
-    bytes  r_point          = 4;  // Round 1 commitment
-    bytes  scalar_signature = 5;  // Round 2 signature share
-}
-
-message ChallengeMessage {
-    string phase                  = 1;
-    uint32 view_number            = 2;
-    bytes  node_hash              = 3;
-    bytes  aggregated_r           = 4;
-    bytes  challenge_k            = 5;
-    repeated int32 participating_nodes = 6;
+    bytes  signature_share  = 4;  // RSA threshold signature share (Step 5)
 }
 
 // Broadcast by the leader after collecting (n-f) prepare votes (Algorithm 2, line 14).
@@ -104,7 +94,6 @@ message ConsensusMessage {
         PreCommitMessage pre_commit = 6;
         CommitMessage    commit     = 7;
         DecideMessage    decide     = 8;
-        ChallengeMessage challenge  = 9;
         SyncRequest      sync_request  = 10;
         SyncResponse     sync_response = 11;
     }

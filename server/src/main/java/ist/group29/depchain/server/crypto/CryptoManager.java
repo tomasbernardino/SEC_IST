@@ -1,48 +1,40 @@
 package ist.group29.depchain.server.crypto;
 
-import com.weavechain.curve25519.EdwardsPoint;
-import com.weavechain.curve25519.Scalar;
-import com.weavechain.sig.ThresholdSigEd25519;
-
+import ist.group29.depchain.server.crypto.threshsig.GroupKey;
+import ist.group29.depchain.server.crypto.threshsig.KeyShare;
+import ist.group29.depchain.server.crypto.threshsig.SigShare;
+import ist.group29.depchain.server.crypto.threshsig.Verifier;
 import java.io.File;
 import java.io.FileInputStream;
 import java.util.List;
-import java.util.Set;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.math.BigInteger;
+import java.io.ObjectInputStream;
 
 /**
- * Manages the threshold keys and operations for a specific node.
+ * Manages the threshold keys and operations for a specific node using the
+ * threshsig library (RSA).
  */
 public class CryptoManager {
     private final int n = 4;
     private final int t = 3;
     private final int myIndex;
 
-    private final byte[] thresholdPublicKey;
-    private final Scalar privateShare;
-    private final ThresholdSigEd25519 tsig;
+    private final GroupKey groupKey;
+    private final KeyShare privateShare;
 
     public CryptoManager(String nodeId, String keysDir) throws Exception {
         this.myIndex = Integer.parseInt(nodeId.split("-")[1]); // e.g. "node-0" -> 0
-        this.tsig = new ThresholdSigEd25519(t, n);
 
         File pubFile = new File(keysDir, "threshold_public.key");
-        this.thresholdPublicKey = readAllBytes(pubFile);
+        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(pubFile))) {
+            this.groupKey = (GroupKey) ois.readObject();
+        }
 
         File shareFile = new File(keysDir, "node-" + myIndex + "-threshold.key");
-        this.privateShare = Scalar.fromBits(readAllBytes(shareFile));
-    }
-
-    private byte[] readAllBytes(File file) throws Exception {
-        try (InputStream is = new FileInputStream(file);
-                ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[1024];
-            int len;
-            while ((len = is.read(buf)) != -1) {
-                bos.write(buf, 0, len);
-            }
-            return bos.toByteArray();
+        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(shareFile))) {
+            this.privateShare = (KeyShare) ois.readObject();
         }
     }
 
@@ -51,53 +43,83 @@ public class CryptoManager {
     }
 
     public byte[] getThresholdPublicKey() {
-        return thresholdPublicKey;
+        // Return modulus or some identifier if needed, for now just use the object
+        return groupKey.getModulus().toByteArray();
     }
 
-    // --- Round 1 (Replica) ---
+    public GroupKey getGroupKey() {
+        return groupKey;
+    }
 
     /**
-     * Compute the R_i point (represented as a byte string in the proto) and the
-     * internal scalar rs.
-     * The node sends the EdwardsPoint to the leader, but MUST remember the Scalar
-     * rs for round 2.
+     * Compute a signature share for the given data.
      */
-    public Scalar computeRs(String toSign) throws Exception {
-        return tsig.computeRi(privateShare, toSign);
+    public byte[] computeSignatureShare(byte[] data) {
+        SigShare share = privateShare.sign(data);
+        return share.getBytes();
     }
-
-    public EdwardsPoint computeRiPoint(Scalar rs) {
-        return ThresholdSigEd25519.mulBasepoint(rs);
-    }
-
-    // --- Round 2 (Replica) ---
 
     /**
-     * Compute the scalar signature share given the leader's challenge k,
-     * the node's remembered rs from round 1, and the set of participating nodes.
-     * Note: the lib's internal computeSignature uses (index + 1).
+     * Aggregate k signature shares into a full signature.
      */
-    public Scalar computeSignatureShare(Scalar rs, Scalar k, Set<Integer> participatingNodes) {
-        return tsig.computeSignature(myIndex + 1, privateShare, rs, k, participatingNodes);
+    public byte[] aggregateSignatureShares(byte[] data, List<byte[]> sharesData, List<Integer> participantIds)
+            throws Exception {
+        SigShare[] shares = new SigShare[sharesData.size()];
+        for (int i = 0; i < sharesData.size(); i++) {
+            shares[i] = new SigShare(participantIds.get(i), sharesData.get(i));
+        }
+
+        // In Shoup's RSA Threshold scheme, the final signature is aggregated
+        // using Lagrange interpolation in the exponent. Although the library's
+        // SigShare.verify() method contains this logic, it is designed to return
+        // a boolean rather than the raw signature bytes.
+        // We therefore use the extracted combineShares() method to produce the
+        // aggregated RSA signature (x^d mod n) which can then be verified by
+        // all replicas and clients using the group public key.
+
+        return combineShares(shares);
     }
 
-    // --- Leader Aggregation ---
+    private byte[] combineShares(SigShare[] S) {
+        int k = groupKey.getK();
+        BigInteger mod = groupKey.getModulus();
+        BigInteger delta = privateShare.getDelta();
 
-    public EdwardsPoint aggregateRi(List<EdwardsPoint> points) {
-        return tsig.computeR(points);
+        BigInteger w = BigInteger.valueOf(1l);
+        for (int i = 0; i < k; i++) {
+            w = w.multiply(S[i].getSig().modPow(lambda(S[i].getId(), S, delta), mod));
+        }
+        return w.mod(mod).toByteArray();
     }
 
-    public Scalar computeChallengeK(EdwardsPoint aggregatedR, String toSign) throws Exception {
-        return tsig.computeK(thresholdPublicKey, aggregatedR, toSign);
+    private BigInteger lambda(int ik, SigShare[] S, BigInteger delta) {
+        BigInteger value = delta;
+        for (SigShare element : S) {
+            if (element.getId() != ik) {
+                value = value.multiply(BigInteger.valueOf(element.getId()));
+            }
+        }
+        for (SigShare element : S) {
+            if (element.getId() != ik) {
+                value = value.divide(BigInteger.valueOf((element.getId() - ik)));
+            }
+        }
+        return value;
     }
 
-    public byte[] aggregateSignatureShares(EdwardsPoint aggregatedR, List<Scalar> shares) throws Exception {
-        return tsig.computeSignature(aggregatedR, shares);
-    }
+    public boolean verifyThresholdSignature(byte[] signature, byte[] data) {
+        BigInteger sig = new BigInteger(signature);
+        BigInteger mod = groupKey.getModulus();
+        BigInteger x = (new BigInteger(data)).mod(mod);
+        BigInteger delta = privateShare.getDelta();
 
-    // --- Verification ---
+        // Shoup verification: w^e = x^(delta^2 * 4) mod n
+        // Where w is the combined signature.
 
-    public boolean verifyThresholdSignature(byte[] signature, byte[] message) throws Exception {
-        return ThresholdSigEd25519.verify(thresholdPublicKey, signature, message);
+        BigInteger eprime = delta.multiply(delta).shiftLeft(2);
+        BigInteger xeprime = x.modPow(eprime, mod);
+        BigInteger we = sig.modPow(groupKey.getExponent(), mod);
+
+        return (xeprime.compareTo(we) == 0);
     }
 }

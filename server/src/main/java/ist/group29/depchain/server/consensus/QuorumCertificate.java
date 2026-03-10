@@ -2,6 +2,7 @@ package ist.group29.depchain.server.consensus;
 
 import com.google.protobuf.ByteString;
 import ist.group29.depchain.network.ConsensusMessages;
+import ist.group29.depchain.server.crypto.CryptoManager;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -88,7 +89,7 @@ public class QuorumCertificate {
     /**
      * Check validity of this QC using ThresholdSignatures.
      */
-    public boolean isValid(byte[] thresholdPublicKey) {
+    public boolean isValid(CryptoManager cryptoManager) {
         if (proto.getThresholdSignature().isEmpty())
             return false;
 
@@ -97,8 +98,7 @@ public class QuorumCertificate {
             return true;
 
         try {
-            return com.weavechain.sig.ThresholdSigEd25519.verify(
-                    thresholdPublicKey,
+            return cryptoManager.verifyThresholdSignature(
                     proto.getThresholdSignature().toByteArray(),
                     getMessageToSign());
         } catch (Exception e) {
