@@ -36,16 +36,13 @@ public class StubbornLink {
         String key = recipientId + ":" + message.getSequenceNumber();
         byte[] payload = message.toByteArray();
 
-        // Send immediately
         fll.send(payload, recipientId);
 
-        // Schedule periodic retransmission
         ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(
                 () -> fll.send(payload, recipientId),
                 RESEND_INTERVAL_MS, RESEND_INTERVAL_MS, TimeUnit.MILLISECONDS
         );
 
-        // Replace any existing retransmission for this key
         ScheduledFuture<?> old = pendingMessages.put(key, future);
         if (old != null) {
             old.cancel(false);
@@ -53,7 +50,7 @@ public class StubbornLink {
     }
 
     /**
-     * Fire-and-forget send (no retransmission).
+     * No retransmission.
      * Used for ACKs and HandshakeAcks — their reliability is guaranteed
      * implicitly by the sender's retransmission of the original message.
      */

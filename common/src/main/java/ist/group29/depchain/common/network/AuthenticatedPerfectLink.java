@@ -23,19 +23,6 @@ import ist.group29.depchain.network.NetworkMessages.Message;
 
 /**
  * Authenticated Perfect Link (APL) — one instance per peer.
- *
- * <p>Provides reliable, authenticated, exactly-once delivery over a shared
- * {@link StubbornLink}. Uses an ECDH handshake (signed with pre-distributed
- * RSA keys) to establish a symmetric HMAC session key.
- *
- * <p>Semantics:
- * <ul>
- *   <li>PL1 (Reliable delivery): If p sends m to q and both are correct,
- *       q eventually delivers m.</li>
- *   <li>PL2 (No duplication): No message is delivered more than once.</li>
- *   <li>PL3 (No creation / Authenticity): If q delivers m from p,
- *       then p previously sent m.</li>
- * </ul>
  */
 public class AuthenticatedPerfectLink {
 
@@ -45,11 +32,10 @@ public class AuthenticatedPerfectLink {
     private final StubbornLink sl;
     private final String selfId;
     private final String peerId;
-    private final KeyPair identityKeyPair;   // RSA (pre-distributed)
-    private final PublicKey peerPublicKey;    // Peer's RSA public key
+    private final KeyPair identityKeyPair;   
+    private final PublicKey peerPublicKey;    
     private final KeyPair dhKeyPair; 
 
-    // Sending state
     private final AtomicLong sendSeqCounter = new AtomicLong(0); 
     private final List<byte[]> sendBuffer = new ArrayList<>();
 
@@ -57,7 +43,6 @@ public class AuthenticatedPerfectLink {
     private long highestDeliveredSeq = -1;
     private final HashSet<Long> nonDeliveredSeqs = new HashSet<>();
     
-    // Session state
     private volatile SecretKey sessionKey = null;
 
     public AuthenticatedPerfectLink(StubbornLink sl, String selfId, String peerId,
@@ -70,13 +55,10 @@ public class AuthenticatedPerfectLink {
         try {
             this.dhKeyPair = CryptoUtils.generateDHKeyPair();
         } catch (GeneralSecurityException e) {
-            throw new RuntimeException("Failed to generate ECDH key pair", e);
+            throw new RuntimeException("Failed to generate DH key pair", e);
         }
     }
 
-    // ======================== Handshake ========================
-
-    /** Initiate a DH handshake with the peer (retransmitted by SL). */
     public void startHandshake() {
         try {
             byte[] dhPubBytes = dhKeyPair.getPublic().getEncoded();
@@ -104,9 +86,6 @@ public class AuthenticatedPerfectLink {
         }
     }
 
-    // ======================== Sending ========================
-
-    /** Send application payload to the peer. Buffers if handshake is not yet complete. */
     public synchronized void send(byte[] payload) {
         if (sessionKey == null) {
             sendBuffer.add(payload);
@@ -141,16 +120,8 @@ public class AuthenticatedPerfectLink {
         }
     }
 
-    // ======================== Receiving (called by LinkManager) ========================
-
-    /**
-     * Process an incoming message from this peer.
-     *
-     * @return the application payload if a new data message was delivered,
-     *         or {@code null} for control messages and duplicates.
-     */
+ 
     public byte[] deliver(Message msg) {
-        // Validate that this message belongs to this APL instance
         if (!msg.getSenderId().equals(peerId)) {
             return null;
         }
@@ -164,7 +135,6 @@ public class AuthenticatedPerfectLink {
         }
     }
 
-    // ======================== Handshake Handlers ========================
 
     private void onHandshake(Message msg) {
         if (sessionKey != null) return; // Prevents replayed handshakes from being processed twice
@@ -180,11 +150,10 @@ public class AuthenticatedPerfectLink {
                 return;
             }
 
-            // Derive session key
             PublicKey peerDH = CryptoUtils.decodeDHPublicKey(peerDHPub);
             establishSession(CryptoUtils.computeSharedSecret(dhKeyPair.getPrivate(), peerDH));
 
-            // Respond with HandshakeAck (fire-and-forget; sender will retransmit Handshake if lost)
+            
             byte[] myDHPub = dhKeyPair.getPublic().getEncoded();
             byte[] ackSig = CryptoUtils.sign(identityKeyPair.getPrivate(),
                     CryptoUtils.toBytes(selfId), CryptoUtils.toBytes(peerId), myDHPub);
@@ -200,6 +169,7 @@ public class AuthenticatedPerfectLink {
                     .setHandshakeAck(ack)
                     .build();
 
+            // Sender will retransmit Handshake if lost so there is no need to retransmit HandshakeAck
             sl.sendOnce(ackMsg, peerId);
             LOGGER.info("[APL] Handshake completed with " + peerId + " (responder)");
         } catch (GeneralSecurityException e) {
@@ -222,9 +192,9 @@ public class AuthenticatedPerfectLink {
             }
 
             PublicKey peerDH = CryptoUtils.decodeDHPublicKey(peerDHPub);
+            
             establishSession(CryptoUtils.computeSharedSecret(dhKeyPair.getPrivate(), peerDH));
 
-            // Stop retransmitting the handshake
             sl.cancelRetransmission(peerId, HANDSHAKE_SEQ);
             LOGGER.info("[APL] Handshake completed with " + peerId + " (initiator)");
         } catch (GeneralSecurityException e) {
@@ -233,16 +203,14 @@ public class AuthenticatedPerfectLink {
     }
 
     private synchronized void establishSession(SecretKey key) {
-        if (sessionKey != null) return; // Idempotent
+        if (sessionKey != null) return; 
         sessionKey = key;
-        // Flush buffered payloads
+
         for (byte[] payload : sendBuffer) {
             doSend(payload);
         }
         sendBuffer.clear();
     }
-
-    // ======================== Data / ACK Handlers ========================
 
     private byte[] onData(Message msg) {
         if (sessionKey == null) return null;
@@ -252,7 +220,6 @@ public class AuthenticatedPerfectLink {
             long seq = msg.getSequenceNumber();
             byte[] payload = data.getPayload().toByteArray();
 
-            // Verify HMAC (binds sender, recipient, seq, and payload)
             boolean validMac = CryptoUtils.verifyHmac(sessionKey, data.getMac().toByteArray(),
                     CryptoUtils.toBytes(peerId), CryptoUtils.toBytes(selfId),
                     CryptoUtils.toBytes(seq), payload);
@@ -261,7 +228,6 @@ public class AuthenticatedPerfectLink {
                 return null;
             }
 
-            // Always send ACK (even for duplicates — silences the peer's SL)
             sendAck(seq);
 
             // Duplicate filtering
@@ -269,7 +235,7 @@ public class AuthenticatedPerfectLink {
                 if (seq <= highestDeliveredSeq) {
                     // Below or at highest delivered seq — deliver only if it fills a gap
                     if (nonDeliveredSeqs.remove(seq)) {
-                        return payload; // Gap filled
+                        return payload;
                     }
                     return null; // Duplicate
                 }
@@ -293,7 +259,6 @@ public class AuthenticatedPerfectLink {
             AckMessage ack = msg.getAck();
             long seq = msg.getSequenceNumber();
 
-            // Verify ACK HMAC (binds sender, recipient, and acknowledged seq)
             boolean validMac = CryptoUtils.verifyHmac(sessionKey, ack.getMac().toByteArray(),
                     CryptoUtils.toBytes(peerId), CryptoUtils.toBytes(selfId),
                     CryptoUtils.toBytes(seq));
@@ -302,7 +267,6 @@ public class AuthenticatedPerfectLink {
                 return;
             }
 
-            // Tell SL to stop retransmitting the original data message
             sl.cancelRetransmission(peerId, seq);
         } catch (GeneralSecurityException e) {
             LOGGER.log(Level.SEVERE, "ACK verification failed", e);
@@ -326,7 +290,7 @@ public class AuthenticatedPerfectLink {
                     .setAck(ack)
                     .build();
 
-            sl.sendOnce(ackMsg, peerId); // Fire-and-forget
+            sl.sendOnce(ackMsg, peerId);
         } catch (GeneralSecurityException e) {
             LOGGER.log(Level.SEVERE, "ACK creation failed", e);
         }

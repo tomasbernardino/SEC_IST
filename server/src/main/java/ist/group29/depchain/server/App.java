@@ -9,7 +9,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  *
@@ -56,23 +55,15 @@ public class App {
         List<String> allNodeIds = new ArrayList<>(config.peers().keySet());
         allNodeIds.add(selfId);
 
-        // AtomicReference to handle the circular dependency between LinkManager and
-        // Consensus
-        final AtomicReference<Consensus> consensusRef = new AtomicReference<>();
-
-        // Network layer
+        // Network layer (no callback required at construction)
         LinkManager linkManager = new LinkManager(
-                config.self(), config.peers(),
-                config.identityKeyPair(), config.peerPublicKeys(),
-                (senderId, payload) -> {
-                    Consensus c = consensusRef.get();
-                    if (c != null)
-                        c.onMessage(senderId, payload);
-                });
+            config.self(), config.peers(),
+            config.identityKeyPair(), config.peerPublicKeys());
 
         // Consensus layer
         Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service, keysDir.toString());
-        consensusRef.set(consensus);
+        // Wire the layers together, then start the network loop
+        linkManager.setMessageListener(consensus::onMessage);
 
         linkManager.start();
 

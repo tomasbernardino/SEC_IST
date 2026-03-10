@@ -283,7 +283,6 @@ public class Consensus implements MessageListener {
         blockStore.put(ByteString.copyFrom(currentProposal.getNodeHash()), currentProposal);
         LOG.info("[Consensus] Leader view " + targetView + " - proposing: " + currentProposal);
 
-        // broadcast Msg(prepare, curProposal, highQC)
         ConsensusMessage prepare = ConsensusMessage.newBuilder()
                 .setViewNumber(targetView)
                 .setPrepare(PrepareMessage.newBuilder()
@@ -549,14 +548,6 @@ public class Consensus implements MessageListener {
         boolean livenessRule = qc.getViewNumber() > lockedQC.getViewNumber();
         LOG.fine("[Consensus] safeNode: safety=" + safetyRule + " liveness=" + livenessRule);
         return safetyRule || livenessRule;
-    }
-
-    /**
-     * Store a block in the local block store.
-     * Used internally when accepting proposals, and exposed for testing.
-     */
-    public void storeBlock(HotStuffNode node) {
-        blockStore.put(ByteString.copyFrom(node.getNodeHash()), node);
     }
 
     /**

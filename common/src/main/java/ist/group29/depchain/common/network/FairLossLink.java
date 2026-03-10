@@ -17,10 +17,6 @@ public class FairLossLink {
     private final DatagramSocket socket;
     private final Map<String, ProcessInfo> addressMap;
 
-    /**
-     * @param port       the UDP port to bind to
-     * @param addressMap maps process IDs to their network addresses
-     */
     public FairLossLink(int port, Map<String, ProcessInfo> addressMap) throws SocketException {
         this.socket = new DatagramSocket(port);
         this.addressMap = addressMap;
@@ -41,10 +37,6 @@ public class FairLossLink {
         }
     }
 
-    /**
-     * Blocking receive. Returns the next parseable Message from the socket,
-     * or {@code null} if parsing fails (corrupted packet).
-     */
     public byte[] deliver() {
         byte[] buffer = new byte[BUFFER_SIZE];
         DatagramPacket packet = new DatagramPacket(buffer, buffer.length);

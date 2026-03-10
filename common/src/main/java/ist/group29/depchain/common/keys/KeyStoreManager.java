@@ -10,21 +10,13 @@ import java.security.PublicKey;
 import java.security.cert.Certificate;
 
 /**
- * Utility class that wraps the Java {@link KeyStore} API for loading
- * RSA key pairs from encrypted {@code .p12} files.
- *
- * <p>Key generation is handled offline by the {@code setup_pki.sh} script
- * using the standard JDK {@code keytool} utility. This class purely focuses
- * on loading those pre-distributed keys into memory at runtime.
+ * Utility class that wraps the Java KeyStore API for loading
+ * RSA key pairs from encrypted .p12 files.
  */
 public class KeyStoreManager {
 
     private static final String KEYSTORE_TYPE = "PKCS12";
 
-
-    /**
-     * Loads the private key stored under the given alias.
-     */
     public static PrivateKey loadPrivateKey(Path path, String alias, char[] password)
             throws GeneralSecurityException, IOException {
 
@@ -34,9 +26,6 @@ public class KeyStoreManager {
         return entry.getPrivateKey();
     }
 
-    /**
-     * Loads the public key (from the certificate) stored under the given alias.
-     */
     public static PublicKey loadPublicKey(Path path, String alias, char[] password)
             throws GeneralSecurityException, IOException {
 

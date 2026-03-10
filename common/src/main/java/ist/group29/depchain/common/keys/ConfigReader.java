@@ -11,28 +11,20 @@ import java.util.Map;
 import ist.group29.depchain.common.network.ProcessInfo;
 
 /**
- * Parses a simple {@code hosts.config} file into {@link ProcessInfo} records.
+ * Parses a simple hosts.config file into ProcessInfo records.
  *
- * <p>Expected file format (one line per node):
- * <pre>
- *   node-0 127.0.0.1 8080
- *   node-1 127.0.0.1 8081
- *   node-2 127.0.0.1 8082
- *   node-3 127.0.0.1 8083
- * </pre>
- *
- * <p>Lines starting with {@code #} are treated as comments and ignored.
- * Blank lines are also skipped.
+ * Expected file format (one line per node):
+ * 
+ * node-0 127.0.0.1 8080
+ * node-1 127.0.0.1 8081
+ * node-2 127.0.0.1 8082
+ * node-3 127.0.0.1 8083
  */
 public class ConfigReader {
 
     /**
      * Parses the hosts config file and returns an ordered map of
      * node ID → ProcessInfo (preserving insertion order).
-     *
-     * @param configPath path to the hosts.config file
-     * @return ordered map of all declared nodes
-     * @throws IOException if the file cannot be read or has an invalid format
      */
     public static Map<String, ProcessInfo> parseHosts(Path configPath) throws IOException {
         Map<String, ProcessInfo> nodes = new LinkedHashMap<>();
@@ -44,7 +36,6 @@ public class ConfigReader {
                 lineNumber++;
                 line = line.trim();
 
-                // Skip blank lines and comments
                 if (line.isEmpty() || line.startsWith("#")) {
                     continue;
                 }
