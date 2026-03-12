@@ -83,13 +83,13 @@ public class ClientLibrary implements MessageListener {
             ClientResponse response = ClientResponse.parseFrom(payload);
             String value = response.getValue();
 
-            // 2. Check if we are actually waiting for this value
+            // Check if we are actually waiting for this value
             Set<String> confirmers = pendingRequests.get(value);
             if (confirmers != null) {
                 confirmers.add(senderId);
                 LOG.info(String.format("[Client] Received DECIDED from %s for value: %s", senderId, value));
 
-                // 3. Quorum Check: Have we heard from f+1 different nodes?
+                // Quorum Check: Have we heard from f+1 different nodes?
                 if (confirmers.size() >= quorumSize) {
                     CompletableFuture<Void> future = futures.remove(value);
                     if (future != null && !future.isDone()) {

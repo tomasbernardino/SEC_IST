@@ -8,7 +8,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Thin Java wrapper around the Protobuf ConsensusMessages.QuorumCertificate.
+ * Java wrapper around the Protobuf ConsensusMessages.QuorumCertificate.
  */
 public class QuorumCertificate {
 

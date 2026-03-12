@@ -57,7 +57,6 @@ public class CryptoManager {
      */
     public byte[] aggregateSignatureShares(byte[] data, List<byte[]> sharesData, List<Integer> participantIds)
             throws Exception {
-
         SigShare[] shares = new SigShare[sharesData.size()];
         for (int i = 0; i < sharesData.size(); i++) {
             shares[i] = new SigShare(participantIds.get(i), sharesData.get(i));

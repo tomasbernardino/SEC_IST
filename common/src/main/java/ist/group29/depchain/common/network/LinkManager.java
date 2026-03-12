@@ -9,6 +9,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import ist.group29.depchain.network.NetworkMessages.Message;
+import ist.group29.depchain.common.network.FairLossLink.ReceivedPacket;
 
 /**
  * Orchestrates the link stack for a single node.
@@ -90,7 +91,7 @@ public class LinkManager {
     private void receiveLoop() {
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                FairLossLink.ReceivedPacket received = fll.deliver();
+                ReceivedPacket received = fll.deliver();
                 if (received == null)
                     continue;
 

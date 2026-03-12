@@ -1,29 +1,34 @@
 package ist.group29.depchain;
 
+import java.security.KeyPairGenerator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.security.KeyPair;
+
+import org.mockito.Mock;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.lenient;
-import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.invocation.InvocationOnMock;
 
 import ist.group29.depchain.server.crypto.CryptoManager;
 import com.google.protobuf.ByteString;
 
 import ist.group29.depchain.common.crypto.CryptoUtils;
 import ist.group29.depchain.common.network.LinkManager;
-import ist.group29.depchain.network.ConsensusMessages;
 import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
 import ist.group29.depchain.network.ConsensusMessages.NewViewMessage;
 import ist.group29.depchain.network.ConsensusMessages.PrepareMessage;
@@ -32,17 +37,14 @@ import ist.group29.depchain.server.consensus.Consensus;
 import ist.group29.depchain.server.consensus.HotStuffNode;
 import ist.group29.depchain.server.consensus.QuorumCertificate;
 import ist.group29.depchain.server.service.Service;
+import ist.group29.depchain.client.ClientMessages.ClientRequest;
+import ist.group29.depchain.network.ConsensusMessages.PreCommitMessage;
+import ist.group29.depchain.network.ConsensusMessages.CommitMessage;
+import ist.group29.depchain.network.ConsensusMessages.DecideMessage;
+import ist.group29.depchain.network.ConsensusMessages.SyncResponse;
 
 /**
  * Unit tests for the Basic HotStuff consensus engine.
- *
- * Tests use Mockito to substitute a real LinkManager with a mock, making it
- * possible to feed crafted messages directly to the
- * consensus state machine without actually opening UDP sockets. This mirrors
- * the approach used in the old project's ByzantineConsensusTest, but
- * adapted to the HotStuff protocol and our event-driven (callback)
- * architecture.
- *
  * System parameters: n=4, f=1, quorum=3 (smallest BFT cluster).
  */
 @ExtendWith(MockitoExtension.class)
@@ -50,11 +52,10 @@ class ConsensusTest {
 
         // 4-node BFT cluster: n=4, f=1, quorum=3
         static final int N = 4;
-        static final int F = (N - 1) / 3; // = 1
-        static final int QUORUM = N - F; // = 3
+        static final int F = (N - 1) / 3;
+        static final int QUORUM = N - F;
 
         static final List<String> NODE_IDS = List.of("node-0", "node-1", "node-2", "node-3");
-        // Sorted: node-0 is leader(1), node-1 is leader(2), etc.
 
         @Mock
         LinkManager mockLinkManager;
@@ -62,8 +63,15 @@ class ConsensusTest {
         @Mock
         CryptoManager mockCrypto;
 
+        @Mock
+        ScheduledExecutorService mockPacemaker;
+
+        @Mock
+        ScheduledFuture<?> mockFuture;
+
         Service service;
         Consensus consensus;
+        Runnable scheduledTimeoutTask;
 
         @BeforeEach
         void setup() throws Exception {
@@ -74,7 +82,21 @@ class ConsensusTest {
                                 .thenReturn(new byte[128]);
                 lenient().when(mockCrypto.verifyThresholdSignature(any(), any())).thenReturn(true);
 
-                consensus = new Consensus("node-0", NODE_IDS, mockLinkManager, service, mockCrypto);
+                // Setup manual pacemaker
+                lenient().doAnswer((InvocationOnMock invocation) -> {
+                        scheduledTimeoutTask = invocation.getArgument(0);
+                        return mockFuture;
+                }).when(mockPacemaker).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+
+                consensus = new Consensus("node-0", NODE_IDS, mockLinkManager, service, mockCrypto, mockPacemaker);
+        }
+
+        void triggerTimeout() {
+                if (scheduledTimeoutTask != null) {
+                        Runnable task = scheduledTimeoutTask;
+                        scheduledTimeoutTask = null;
+                        task.run();
+                }
         }
 
         // Test 1: Leader rotation
@@ -82,9 +104,6 @@ class ConsensusTest {
         /**
          * Verify that leader(v) maps view numbers to node IDs via round-robin
          * over the sorted node list.
-         *
-         * The algorithm requires that every node derives the same leader for
-         * any given view since round-robin over sorted IDs is deterministic and fair.
          */
         @Test
         void testLeaderRotation() {
@@ -99,120 +118,177 @@ class ConsensusTest {
 
         /**
          * Verify that safeNode rejects a node that does NOT extend from
-         * the lockedQC node AND whose justification QC is not fresher.
-         * According to:
-         * Safety rule: node extends from lockedQC.node => FALSE (conflicting branch)
-         * Liveness rule: qc.viewNumber > lockedQC.viewNumber => FALSE (same or older)
-         * 
-         * Both rules false => safeNode returns false => replica must NOT vote.
-         *
-         * This test exercises the core safety property of HotStuff: once locked
-         * on a branch, a replica should never vote for a conflicting branch that
-         * cannot prove it has wider support.
+         * the lockedQC node AND whose QC is not fresher.
          */
         @Test
         void testSafeNodeSafetyRuleRejectsConflict() {
-                // Simulate having lockedQC at view 2 on some specific node hash
-                byte[] conflictingParentHash = CryptoUtils.computeHash(new byte[32], "other-chain", 1);
 
-                // Build a QC that locked the replica on view 2
-                // (Variable lockedQcProto was unused and removed)
+                consensus.start(null); // starts view 1
 
-                // A conflicting node: parent_hash does NOT match the locked node hash
-                HotStuffNode conflictingNode = new HotStuffNode(
-                                ConsensusMessages.HotStuffNode.newBuilder()
-                                                .setParentHash(ByteString.copyFrom(conflictingParentHash)) // different
-                                                                                                           // chain!
-                                                .setCommand("conflicting-cmd")
-                                                .setViewNumber(3)
-                                                .setNodeHash(ByteString.copyFrom(
-                                                                CryptoUtils.computeHash(conflictingParentHash,
-                                                                                "conflicting-cmd", 3)))
-                                                .build());
+                HotStuffNode validProposal = HotStuffNode.genesis().createLeaf("valid-cmd", 1, "system",
+                                System.currentTimeMillis());
+                consensus.storeBlock(validProposal);
 
-                // A QC with the SAME view as the lockedQC - liveness rule = FALSE
-                // We use a dummy 64-byte signature to satisfy the isValid length check
+                // Receive PREPARE (to set currentProposal)
+                QuorumCertificate genesisQC = QuorumCertificate.genesisQC();
+                ConsensusMessage prepareMsgV1 = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(validProposal.getProto())
+                                                .setJustify(genesisQC.getProto())
+                                                .build())
+                                .build();
+                consensus.onMessage("node-0", prepareMsgV1.toByteArray());
+
+                // Receive PRE-COMMIT (to set prepareQC)
+                QuorumCertificate validPrepareQC = QuorumCertificate.create(
+                                QuorumCertificate.PREPARE, 1, validProposal.getNodeHash(), new byte[64]);
+                ConsensusMessage preCommitMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPreCommit(PreCommitMessage.newBuilder()
+                                                .setJustify(validPrepareQC.getProto())
+                                                .build())
+                                .build();
+                consensus.onMessage("node-0", preCommitMsg.toByteArray());
+
+                // Receive COMMIT (to set lockedQC)
+                QuorumCertificate validPreCommitQC = QuorumCertificate.create(
+                                QuorumCertificate.PRE_COMMIT, 1, validProposal.getNodeHash(), new byte[64]);
+                ConsensusMessage commitMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setCommit(ist.group29.depchain.network.ConsensusMessages.CommitMessage.newBuilder()
+                                                .setJustify(validPreCommitQC.getProto())
+                                                .build())
+                                .build();
+                consensus.onMessage("node-0", commitMsg.toByteArray());
+
+                // Receive DECIDE
+                QuorumCertificate validCommitQC = QuorumCertificate.create(
+                                QuorumCertificate.COMMIT, 1, validProposal.getNodeHash(), new byte[64]);
+                ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                                .setJustify(validCommitQC.getProto())
+                                                .build())
+                                .build();
+                consensus.onMessage("node-0", decideMsg.toByteArray());
+
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                // Simulate a conflicting PREPARE in view 2
+                // The conflicting node extends from genesis (view 0), NOT from the lockedQC
+                // node
+                HotStuffNode conflictingNode = HotStuffNode.genesis().createLeaf("conflicting-cmd", 2, "system", 0);
+
                 QuorumCertificate staleJustify = QuorumCertificate.create(
-                                QuorumCertificate.PREPARE, 2, conflictingParentHash, new byte[64]);
+                                QuorumCertificate.PREPARE, 1, conflictingNode.getProto().getParentHash().toByteArray(),
+                                new byte[64]);
 
-                // Directly invoking safeNode via a PREPARE message: feed it through onMessage
-                // The replica (Consensus) should NOT emit a VOTE because safeNode fails
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
-                                .setViewNumber(3)
+                                .setViewNumber(2)
                                 .setPrepare(PrepareMessage.newBuilder()
                                                 .setNode(conflictingNode.getProto())
                                                 .setJustify(staleJustify.getProto())
                                                 .build())
                                 .build();
 
-                // Note: we cannot set lockedQC directly (private), so we test the
-                // safeNode logic indirectly: in a fresh Consensus (lockedQC = genesisQC),
-                // the safety rule always passes because every node parent traces to genesis.
-                // This ensures the genesis start state is correct.
-                consensus.onMessage("node-0", prepareMsg.toByteArray());
-                // No VOTE should be sent (mock verifies no interaction for vote)
-                // The broadcast call happens for the PREPARE from leader-to-self path
-                // but no outgoing VOTE to leader (node-0 is the leader, handled internally)
+                consensus.onMessage("node-1", prepareMsg.toByteArray());
+
+                // VOTE should NOT be sent because safeNode fails
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
+                                .send(org.mockito.ArgumentMatchers.eq("node-1"), org.mockito.ArgumentMatchers.any());
         }
 
-        // Test 3: safeNode - liveness rule overrides stale lock
+        // Test 3: safeNode - liveness rule overrides old lock
 
         /**
          * Verify that safeNode accepts a conflicting proposal when the
-         * justification QC is fresher than the lockedQC (liveness rule).
-         *
-         * <p>
-         * This corresponds to Algorithm 1 line 27: even if a node conflicts with
-         * the locked node, if the justification QC has a higher view number than
-         * lockedQC, the replica must accept it. This is what makes HotStuff live
-         * even when some replicas are locked on stale branches (Theorem 4).
-         *
-         * <p>
-         * In this test the node easily extends from genesis (safety rule = true)
-         * and we confirm the consensus accepts PREPARE without error.
+         * QC is fresher than the lockedQC (liveness rule).
          */
         @Test
         void testSafeNodeLivenessRuleAcceptsFresherQC() {
-                // In a freshly initialized Consensus, lockedQC is genesisQC (view 0).
-                // Any node with a justify QC at view >= 1 satisfies the liveness rule.
-                // Build a valid proposal from node-0 (leader(1)) to node-0 (ourselves):
+                Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, service, mockCrypto,
+                                mockPacemaker);
+                replica.start(null);
 
-                HotStuffNode proposed = HotStuffNode.genesis()
+                // Build a valid proposal from node-0
+                HotStuffNode v1Proposal = HotStuffNode.genesis()
                                 .createLeaf("hello-world", 1, "system", 0);
 
                 QuorumCertificate freshJustify = QuorumCertificate.genesisQC();
 
-                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                ConsensusMessage prepareMsg1 = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
-                                                .setNode(proposed.getProto())
+                                                .setNode(v1Proposal.getProto())
                                                 .setJustify(freshJustify.getProto())
                                                 .build())
                                 .build();
+                replica.onMessage("node-0", prepareMsg1.toByteArray());
 
-                // Should NOT throw and should trigger internal vote processing
-                assertDoesNotThrow(() -> consensus.onMessage("node-0", prepareMsg.toByteArray()),
-                                "safeNode should accept proposals extending from genesis");
+                QuorumCertificate v1PrepareQC = QuorumCertificate.create(
+                                QuorumCertificate.PREPARE, 1, v1Proposal.getNodeHash(), new byte[64]);
+
+                ConsensusMessage preCommitMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPreCommit(PreCommitMessage
+                                                .newBuilder()
+                                                .setJustify(v1PrepareQC.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", preCommitMsg.toByteArray());
+
+                // Receive COMMIT
+                QuorumCertificate v1PreCommitQC = QuorumCertificate.create(
+                                QuorumCertificate.PRE_COMMIT, 1, v1Proposal.getNodeHash(), new byte[64]);
+                ConsensusMessage commitMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setCommit(CommitMessage.newBuilder()
+                                                .setJustify(v1PreCommitQC.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", commitMsg.toByteArray());
+
+                // Replica is now locked on v1Proposal (view 1)
+
+                triggerTimeout();
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                triggerTimeout();
+
+                HotStuffNode conflictingProposal = HotStuffNode.genesis().createLeaf("conflicting-cmd", 3, "system", 0);
+                replica.storeBlock(conflictingProposal);
+
+                QuorumCertificate fresherQC = QuorumCertificate.create(
+                                QuorumCertificate.PREPARE, 2,
+                                conflictingProposal.getProto().getParentHash().toByteArray(), new byte[64]);
+
+                ConsensusMessage prepareMsg2 = ConsensusMessage.newBuilder()
+                                .setViewNumber(3)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(conflictingProposal.getProto())
+                                                .setJustify(fresherQC.getProto())
+                                                .build())
+                                .build();
+
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+                replica.onMessage("node-2", prepareMsg2.toByteArray());
+
+                // Verify the liveness rule passed by checking that a VOTE was sent back to
+                // the leader
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.times(1))
+                                .send(org.mockito.ArgumentMatchers.eq("node-2"), org.mockito.ArgumentMatchers.any());
+
+                replica.shutdown();
         }
 
-        // Test 4: Happy-path leader (drive one complete view)
+        // Test 4: Happy-path leader
 
         /**
          * Simulate a complete, happy-path view for node-0 (the leader for view 1).
-         *
-         * Feeds:
-         * n-f=3 NEW-VIEW messages (triggers leader to broadcast PREPARE)
-         * n-f=3 PREPARE votes (triggers PRE-COMMIT broadcast)
-         * n-f=3 PRE-COMMIT votes (triggers COMMIT broadcast)
-         * n-f=3 COMMIT votes (triggers DECIDE broadcast + upcall to Service)
-         * After feeding all messages, the service's blockchain must contain exactly
-         * the decided command string.
-         *
-         * This is the most important test: it validates the entire Algorithm 2
-         * flow end-to-end without network I/O.
          */
         @Test
-        void testHappyPathLeaderCompletesOneView() throws InterruptedException {
+        void testHappyPathLeaderCompletesOneView() throws Exception {
                 // Use a latch to detect the decide upcall asynchronously
                 CountDownLatch decideLatch = new CountDownLatch(1);
                 Service trackingService = new Service() {
@@ -226,31 +302,51 @@ class ConsensusTest {
 
                 Consensus leader = new Consensus("node-0", NODE_IDS, mockLinkManager, trackingService, mockCrypto);
 
-                // --- Step 1: Feed n-f NEW-VIEW messages from three different peers
-                // (node-0 injects its own synthetic NEW-VIEW in start(); we feed 2 more)
+                // Feed a ClientRequest to leader node-0 so it will propose it
+                KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+                kpg.initialize(2048);
+                KeyPair kp = kpg.generateKeyPair();
+                org.mockito.Mockito.lenient().when(mockLinkManager.getPeerPublicKey("client-1"))
+                                .thenReturn(kp.getPublic());
+
+                long timestampReq = System.currentTimeMillis();
+                byte[] sig = CryptoUtils.sign(kp.getPrivate(),
+                                CryptoUtils.toBytes("APPEND"),
+                                CryptoUtils.toBytes("cmd-view-1"),
+                                CryptoUtils.toBytes(timestampReq));
+
+                ClientRequest req = ClientRequest
+                                .newBuilder()
+                                .setOp(ClientRequest.Operation.APPEND)
+                                .setValue("cmd-view-1")
+                                .setTimestamp(timestampReq)
+                                .setSignature(com.google.protobuf.ByteString.copyFrom(sig))
+                                .build();
+                leader.onMessage("client-1", req.toByteArray());
+
+                // Feed n-f NEW-VIEW messages from three different peers
                 leader.start(null);
 
                 feedNewView(leader, "node-1", 1);
                 feedNewView(leader, "node-2", 1);
-                // This triggers the leader to broadcast PREPARE
 
-                // --- Step 2: Feed n-f PREPARE votes
+                // Feed n-f PREPARE votes
                 byte[] nodeHash = computeViewNodeHash("cmd-view-1", 1);
                 feedVote(leader, "node-0", QuorumCertificate.PREPARE, 1, nodeHash);
                 feedVote(leader, "node-1", QuorumCertificate.PREPARE, 1, nodeHash);
                 feedVote(leader, "node-2", QuorumCertificate.PREPARE, 1, nodeHash);
 
-                // --- Step 3: Feed n-f PRE-COMMIT votes
+                // Feed n-f PRE-COMMIT votes
                 feedVote(leader, "node-0", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
                 feedVote(leader, "node-1", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
                 feedVote(leader, "node-2", QuorumCertificate.PRE_COMMIT, 1, nodeHash);
 
-                // --- Step 4: Feed n-f COMMIT votes
+                // Feed n-f COMMIT votes
                 feedVote(leader, "node-0", QuorumCertificate.COMMIT, 1, nodeHash);
                 feedVote(leader, "node-1", QuorumCertificate.COMMIT, 1, nodeHash);
                 feedVote(leader, "node-2", QuorumCertificate.COMMIT, 1, nodeHash);
 
-                // Wait for the decide upcall (max 5 s)
+                // Wait for the decide upcall
                 boolean decided = decideLatch.await(5, TimeUnit.SECONDS);
                 assertTrue(decided, "DECIDE should have been reached within timeout");
                 assertEquals(1, trackingService.size(), "Blockchain should have exactly 1 entry");
@@ -266,14 +362,6 @@ class ConsensusTest {
          * Verify that createLeaf("cmd", 0, "system", 0) produces deterministic hash
          * chains
          * and that extendsFrom() correctly checks ancestry.
-         *
-         * This validates the hash-chaining property described in Section 4.2:
-         * "The method creates a new leaf node as a child and embeds a digest of
-         * the parent in the child node." A child's parent_hash must exactly equal
-         * the parent's node_hash.
-         *
-         * Ancestry checking (extendsFrom) is done at the Consensus level
-         * using the blockStore for recursive chain traversal (Step 5 BFT).
          */
         @Test
         void testHotStuffNodeHashChaining() {
@@ -281,7 +369,6 @@ class ConsensusTest {
                 HotStuffNode child1 = genesis.createLeaf("cmd", 0, "system", 0);
                 HotStuffNode child2 = child1.createLeaf("cmd", 0, "system", 0);
 
-                // Parent hash linkage
                 assertArrayEquals(genesis.getNodeHash(),
                                 child1.getProto().getParentHash().toByteArray(),
                                 "child1.parentHash must equal genesis.nodeHash");
@@ -290,8 +377,7 @@ class ConsensusTest {
                                 child2.getProto().getParentHash().toByteArray(),
                                 "child2.parentHash must equal child1.nodeHash");
 
-                // extendsFrom checks (Consensus-level, uses blockStore)
-                // Genesis is already in the blockStore; add child1 and child2
+                // extendsFrom checks
                 consensus.storeBlock(child1);
                 consensus.storeBlock(child2);
                 assertTrue(consensus.extendsFrom(child1, genesis.getNodeHash()),
@@ -307,11 +393,11 @@ class ConsensusTest {
                                 "Hash must be deterministic for the same inputs");
         }
 
-        // Test 6: Bait-and-Switch (extendsFrom failure)
+        // Test 6: extendsFrom failure
         @Test
-        void testBaitAndSwitchRejectsInvalidParentHash() {
+        void testRejectsInvalidParentHash() {
                 Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, service, mockCrypto);
-                replica.start(null); // Join view 1
+                replica.start(null);
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
                 HotStuffNode proposed = HotStuffNode.genesis().createLeaf("evil-cmd", 1, "system",
@@ -331,7 +417,7 @@ class ConsensusTest {
                                                 .build())
                                 .build();
 
-                replica.onMessage("node-0", prepareMsg.toByteArray()); // "node-0" is leader for view 1
+                replica.onMessage("node-0", prepareMsg.toByteArray());
                 // Replica should reject and NOT send a VOTE back to node-0
                 org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
                                 .send(org.mockito.ArgumentMatchers.eq("node-0"), org.mockito.ArgumentMatchers.any());
@@ -341,12 +427,16 @@ class ConsensusTest {
         // Test 7: Duplicate Vote Spammer
         @Test
         void testDuplicateVoteSpammer() {
-                // "node-0" is leader for view 1
                 consensus.start(null);
 
                 byte[] nodeHash = computeViewNodeHash("cmd-test", 1);
 
-                // One malicious node sends QUORUM number of identical votes!
+                feedNewView(consensus, "node-1", 1);
+                feedNewView(consensus, "node-2", 1);
+
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                // One malicious node sends QUORUM number of identical votes
                 for (int i = 0; i < QUORUM; i++) {
                         feedVote(consensus, "node-1", QuorumCertificate.PREPARE, 1, nodeHash);
                 }
@@ -362,7 +452,7 @@ class ConsensusTest {
         @Test
         void testLeaderEquivocation() {
                 Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, service, mockCrypto);
-                replica.start(null); // Join view 1
+                replica.start(null);
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
                 // Leader sends first valid PREPARE
@@ -415,7 +505,7 @@ class ConsensusTest {
                 replica.start(null); // Join view 1
 
                 // First, feed a PREPARE so currentProposal is set!
-                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd", 0, "system", 0);
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd", 1, "system", 0);
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -425,28 +515,51 @@ class ConsensusTest {
                                 .build();
                 replica.onMessage("node-0", prepareMsg.toByteArray());
 
-                byte[] nodeHash = proposed.getNodeHash();
-                QuorumCertificate commitQC = QuorumCertificate.create(QuorumCertificate.COMMIT, 0, nodeHash,
-                                new byte[64]);
+                // PRE-COMMIT
+                QuorumCertificate prepareQC = QuorumCertificate.create(QuorumCertificate.PREPARE, 1,
+                                proposed.getNodeHash(), new byte[64]);
+                ConsensusMessage preCommitMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPreCommit(PreCommitMessage
+                                                .newBuilder()
+                                                .setJustify(prepareQC.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", preCommitMsg.toByteArray());
 
+                // COMMIT
+                QuorumCertificate preCommitQC = QuorumCertificate.create(QuorumCertificate.PRE_COMMIT, 1,
+                                proposed.getNodeHash(), new byte[64]);
+                ConsensusMessage commitMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setCommit(CommitMessage.newBuilder()
+                                                .setJustify(preCommitQC.getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", commitMsg.toByteArray());
+
+                QuorumCertificate commitQC = QuorumCertificate.create(QuorumCertificate.COMMIT, 1,
+                                proposed.getNodeHash(),
+                                new byte[64]);
                 ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
-                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                .setDecide(DecideMessage.newBuilder()
                                                 .setJustify(commitQC.getProto())
                                                 .build())
                                 .build();
 
-                // Leader rapidly fires DECIDE multiple times
+                // Leader fires DECIDE multiple times
                 replica.onMessage("node-0", decideMsg.toByteArray());
                 replica.onMessage("node-0", decideMsg.toByteArray());
                 replica.onMessage("node-0", decideMsg.toByteArray());
 
                 // The service should have only executed the command ONCE
-                assertEquals(1, decideCalls[0], "Decide should be strictly idempotent");
+                assertEquals(1, decideCalls[0],
+                                "Decide should be strictly idempotent, ignoring duplicate DECIDE messages.");
                 replica.shutdown();
         }
 
-        // Test 10: Skipped Phases (Out-of-Order Delivery)
+        // Test 10: Skipped Phases
         @Test
         void testSkippedPhases() {
                 int[] decideCalls = { 0 };
@@ -462,11 +575,11 @@ class ConsensusTest {
                 replica.start(null);
 
                 byte[] nodeHash = computeViewNodeHash("cmd", 1);
-                QuorumCertificate commitQC = QuorumCertificate.create(QuorumCertificate.COMMIT, 0, nodeHash,
+                QuorumCertificate commitQC = QuorumCertificate.create(QuorumCertificate.COMMIT, 1, nodeHash,
                                 new byte[64]);
                 ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
-                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                .setDecide(DecideMessage.newBuilder()
                                                 .setJustify(commitQC.getProto())
                                                 .build())
                                 .build();
@@ -476,41 +589,58 @@ class ConsensusTest {
                 replica.shutdown();
         }
 
-        // Test 11: Forged / Invalid QC Signature Test
+        // Test 11: Forged/Invalid QC Signature Test
         @Test
         void testForgedQC() {
+                // Ensure the cryptographic validation FAILS for forged signatures
+                lenient().when(mockCrypto.verifyThresholdSignature(any(), any())).thenReturn(false);
+
                 Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, service, mockCrypto);
                 replica.start(null);
+
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd", 1, "system", 0);
+                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(1)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(proposed.getProto())
+                                                .setJustify(QuorumCertificate.genesisQC().getProto())
+                                                .build())
+                                .build();
+                replica.onMessage("node-0", prepareMsg.toByteArray());
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
-                QuorumCertificate forgedQC = QuorumCertificate.create(QuorumCertificate.PREPARE, 1, new byte[32],
+                QuorumCertificate forgedQC = QuorumCertificate.create(QuorumCertificate.PREPARE, 1,
+                                proposed.getNodeHash(),
                                 new byte[64]);
                 ConsensusMessage preCommitMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
-                                .setPreCommit(ist.group29.depchain.network.ConsensusMessages.PreCommitMessage
+                                .setPreCommit(PreCommitMessage
                                                 .newBuilder()
                                                 .setJustify(forgedQC.getProto())
                                                 .build())
                                 .build();
 
                 replica.onMessage("node-0", preCommitMsg.toByteArray());
+
+                // Should reject due to invalid signature, no vote sent
                 org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
                                 .send(org.mockito.ArgumentMatchers.eq("node-0"), org.mockito.ArgumentMatchers.any());
                 replica.shutdown();
         }
 
-        // Test 12: Stale View Proposal Test
+        // Test 12: Old View Proposal Test
         @Test
-        void testStaleViewProposal() {
+        void testOldViewProposal() {
                 consensus.start(null);
-                feedNewView(consensus, "node-1", 10);
-                feedNewView(consensus, "node-2", 10); // Now in View 10
+
+                // Advance to view 2
+                triggerTimeout();
+
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
-                HotStuffNode oldNode = HotStuffNode.genesis().createLeaf("old", 2, "system",
-                                System.currentTimeMillis());
+                HotStuffNode oldNode = HotStuffNode.genesis().createLeaf("old", 2, "system", 0);
                 ConsensusMessage oldPrepare = ConsensusMessage.newBuilder()
-                                .setViewNumber(2)
+                                .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
                                                 .setNode(oldNode.getProto())
                                                 .setJustify(QuorumCertificate.genesisQC().getProto())
@@ -518,6 +648,8 @@ class ConsensusTest {
                                 .build();
 
                 consensus.onMessage("node-1", oldPrepare.toByteArray());
+
+                // Replica should ignore old view 1 and not send any vote
                 org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
                                 .send(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         }
@@ -543,46 +675,14 @@ class ConsensusTest {
                 replica.shutdown();
         }
 
-        // Test 14: The f+1 Faults Complete Failure Test
-        @Test
-        void testPacemakerTimeoutOnFaults() throws InterruptedException {
-                consensus.start(null);
-                byte[] nodeHash = computeViewNodeHash("cmd", 1);
-                feedVote(consensus, "node-1", QuorumCertificate.PREPARE, 1, nodeHash);
-
-                Thread.sleep(4500); // Wait for timeout (4 seconds default + buffer)
-
-                org.mockito.ArgumentCaptor<byte[]> captor = org.mockito.ArgumentCaptor.forClass(byte[].class);
-                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
-                                .send(org.mockito.ArgumentMatchers.eq("node-1"), captor.capture());
-
-                boolean sentNewView = false;
-                for (byte[] raw : captor.getAllValues()) {
-                        try {
-                                ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
-                                if (msg.hasNewView() && msg.getViewNumber() == 2)
-                                        sentNewView = true;
-                        } catch (Exception ignored) {
-                        }
-                }
-                assertTrue(sentNewView, "Pacemaker must trigger a view change on timeout");
-        }
-
-        // Test 15: Incremental Branch Execution
+        // Test 14: Incremental Branch Execution
         @Test
         void testIncrementalExecution() {
-                // Build a chain: genesis <- node_v1 <- node_v2 <- node_v3
                 HotStuffNode genesis = HotStuffNode.genesis();
                 HotStuffNode nodeV1 = genesis.createLeaf("cmd-view-1", 1, "system", 0);
                 HotStuffNode nodeV2 = nodeV1.createLeaf("cmd-view-2", 2, "system", 0);
                 HotStuffNode nodeV3 = nodeV2.createLeaf("cmd-view-3", 3, "system", 0);
 
-                // Populate blockStore with all nodes
-                consensus.storeBlock(nodeV1);
-                consensus.storeBlock(nodeV2);
-                consensus.storeBlock(nodeV3);
-
-                // Create a replica at view 3 with currentProposal set to nodeV3
                 List<String> commands = new ArrayList<>();
                 Service trackingService = new Service() {
                         @Override
@@ -593,55 +693,63 @@ class ConsensusTest {
                         }
                 };
 
-                // We need a replica that is in view 3 and has nodeV3 as currentProposal.
-                // We'll simulate this by creating a replica, feeding a PREPARE for view 1
-                // to set currentProposal, then triggering a DECIDE.
-                Consensus replica = new Consensus("node-2", NODE_IDS, mockLinkManager, trackingService, mockCrypto);
+                Consensus replica = new Consensus("node-2", NODE_IDS, mockLinkManager, trackingService, mockCrypto,
+                                mockPacemaker);
                 replica.start(null);
 
-                // Store the full chain in replica's blockStore
                 replica.storeBlock(nodeV1);
                 replica.storeBlock(nodeV2);
                 replica.storeBlock(nodeV3);
 
-                // Feed a PREPARE from the view-1 leader (node-0) so currentProposal is set
+                // Advance replica's view to 3
+                triggerTimeout();
+                triggerTimeout();
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                QuorumCertificate v2QC = QuorumCertificate.create(QuorumCertificate.PREPARE, 2, nodeV2.getNodeHash(),
+                                new byte[64]);
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
-                                .setViewNumber(1)
+                                .setViewNumber(3)
                                 .setPrepare(PrepareMessage.newBuilder()
-                                                .setNode(nodeV1.getProto())
-                                                .setJustify(QuorumCertificate.genesisQC().getProto())
+                                                .setNode(nodeV3.getProto())
+                                                .setJustify(v2QC.getProto())
                                                 .build())
                                 .build();
-                replica.onMessage("node-0", prepareMsg.toByteArray());
+                replica.onMessage("node-2", prepareMsg.toByteArray());
 
-                // Now DECIDE for view 1 - this should only execute cmd-view-1
-                QuorumCertificate commitQC = QuorumCertificate.create(
-                                QuorumCertificate.COMMIT, 0, nodeV1.getNodeHash(), new byte[64]);
+                // DECIDE for View 3
+                QuorumCertificate commitQC = QuorumCertificate.create(QuorumCertificate.COMMIT, 3, nodeV3.getNodeHash(),
+                                new byte[64]);
                 ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
-                                .setViewNumber(1)
-                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                .setViewNumber(3)
+                                .setDecide(DecideMessage.newBuilder()
                                                 .setJustify(commitQC.getProto())
                                                 .build())
                                 .build();
-                replica.onMessage("node-0", decideMsg.toByteArray());
+                replica.onMessage("node-2", decideMsg.toByteArray());
 
-                assertEquals(1, commands.size(), "Should execute exactly 1 command for single-node decide");
-                assertEquals("cmd-view-1", commands.get(0));
+                // Verify incremental chronological execution
+                assertEquals(3, commands.size(), "Should incrementally execute all 3 commands from the branch");
+                assertEquals("cmd-view-1", commands.get(0), "V1 must execute first");
+                assertEquals("cmd-view-2", commands.get(1), "V2 must execute second");
+                assertEquals("cmd-view-3", commands.get(2), "V3 must execute last");
 
                 replica.shutdown();
         }
 
-        // Test 16: Sync Request Triggered on Missing Block
+        // Test 15: Sync Request Triggered on Missing Block
         @Test
         void testSyncRequestTriggeredOnMissingBlock() {
                 // Create a replica at view 1 with no extra blocks in blockStore
                 Consensus replica = new Consensus("node-1", NODE_IDS, mockLinkManager, service, mockCrypto);
                 replica.start(null);
+                org.mockito.Mockito.lenient().when(mockCrypto.verifyThresholdSignature(
+                                org.mockito.ArgumentMatchers.any(),
+                                org.mockito.ArgumentMatchers.any()))
+                                .thenReturn(true); // Force the fake QC to pass validation
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
                 // Build a PREPARE that references a block we DON'T have
-                // The justify QC has view > 0 (fresher than lockedQC which is genesis)
-                // and references a node hash NOT in the blockStore
                 byte[] unknownHash = new byte[32];
                 unknownHash[0] = (byte) 0xDE;
                 unknownHash[1] = (byte) 0xAD;
@@ -657,7 +765,6 @@ class ConsensusTest {
                                                                                 1)))
                                                 .build());
 
-                // Justify QC with view 1 (> lockedQC view 0) referencing the unknown hash
                 QuorumCertificate freshJustify = QuorumCertificate.create(
                                 QuorumCertificate.PREPARE, 1, unknownHash, new byte[64]);
 
@@ -690,10 +797,9 @@ class ConsensusTest {
                 replica.shutdown();
         }
 
-        // Test 17: Sync Response Populates BlockStore
+        // Test 16: Sync Response Populates BlockStore
         @Test
         void testSyncResponsePopulatesBlockStore() {
-                // Build a chain: genesis <- node_v1 <- node_v2
                 HotStuffNode genesis = HotStuffNode.genesis();
                 HotStuffNode nodeV1 = genesis.createLeaf("cmd", 0, "system", 0);
                 HotStuffNode nodeV2 = nodeV1.createLeaf("cmd", 0, "system", 0);
@@ -703,7 +809,7 @@ class ConsensusTest {
                 ConsensusMessage syncResp = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setSyncResponse(
-                                                ist.group29.depchain.network.ConsensusMessages.SyncResponse.newBuilder()
+                                                SyncResponse.newBuilder()
                                                                 .addNodes(nodeV1.getProto())
                                                                 .addNodes(nodeV2.getProto())
                                                                 .build())
@@ -718,7 +824,7 @@ class ConsensusTest {
                                 "nodeV2 should extend from genesis after sync");
         }
 
-        // Test 18: Orphaned Branch Not Executed
+        // Test 17: Orphaned Branch Not Executed
         // Scenario: tree forks from nodeA — one branch is committed, the other is
         // orphaned.
         // Verifies executeCommittedBranch only walks the decided path.
@@ -749,7 +855,6 @@ class ConsensusTest {
                 replica.storeBlock(nodeOrphan);
                 replica.storeBlock(nodeCommitted);
 
-                // PREPARE for nodeCommitted — justify references nodeA (its parent)
                 QuorumCertificate justifyA = QuorumCertificate.create(
                                 QuorumCertificate.PREPARE, 0, nodeA.getNodeHash(), new byte[64]);
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
@@ -761,18 +866,16 @@ class ConsensusTest {
                                 .build();
                 replica.onMessage("node-0", prepareMsg.toByteArray());
 
-                // DECIDE (viewNumber=0 bypasses threshold sig verification)
                 QuorumCertificate commitQC = QuorumCertificate.create(
                                 QuorumCertificate.COMMIT, 0, nodeCommitted.getNodeHash(), new byte[64]);
                 ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
-                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                .setDecide(DecideMessage.newBuilder()
                                                 .setJustify(commitQC.getProto())
                                                 .build())
                                 .build();
                 replica.onMessage("node-0", decideMsg.toByteArray());
 
-                // cmd-a and cmd-committed executed; cmd-orphan NOT (wrong branch)
                 assertEquals(2, commands.size(), "Should execute 2 commands on committed branch");
                 assertEquals("cmd-a", commands.get(0));
                 assertEquals("cmd-committed", commands.get(1));
@@ -780,7 +883,7 @@ class ConsensusTest {
                 replica.shutdown();
         }
 
-        // Test 19: Multi-Command Incremental Execution
+        // Test 18: Multi-Command Incremental Execution
         // Scenario: chain of 3 nodes decided at once — all 3 commands must execute in
         // order.
         @Test
@@ -825,7 +928,7 @@ class ConsensusTest {
                                 QuorumCertificate.COMMIT, 0, nodeC.getNodeHash(), new byte[64]);
                 ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
-                                .setDecide(ist.group29.depchain.network.ConsensusMessages.DecideMessage.newBuilder()
+                                .setDecide(DecideMessage.newBuilder()
                                                 .setJustify(commitQC.getProto())
                                                 .build())
                                 .build();
@@ -840,7 +943,7 @@ class ConsensusTest {
                 replica.shutdown();
         }
 
-        // Test Edge Case: Insufficient Signature Shares
+        // Test 19: Insufficient Signature Shares
         @Test
         void testInsufficientSignatureShares() throws InterruptedException {
                 // Return false for verification when fewer than consensus quorum (3)
@@ -858,7 +961,7 @@ class ConsensusTest {
                                 .broadcast(org.mockito.ArgumentMatchers.any());
         }
 
-        // Test Edge Case: Faulty Signature Share
+        // Test 20: Faulty Signature Share
         @Test
         void testFaultySignatureShare() throws Exception {
                 // Simulate faulty aggregation rejection
@@ -868,6 +971,7 @@ class ConsensusTest {
                 consensus.start(null);
                 byte[] nodeHash = computeViewNodeHash("cmd", 1);
 
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
                 // Nodes send votes, but aggregation fails
                 feedVote(consensus, "node-1", QuorumCertificate.PREPARE, 1, nodeHash);
                 feedVote(consensus, "node-2", QuorumCertificate.PREPARE, 1, nodeHash);
@@ -878,19 +982,19 @@ class ConsensusTest {
                                 .broadcast(org.mockito.ArgumentMatchers.any());
         }
 
-        // Test 20: After PREPARE-only failure, prepareQC stays at genesis
+        // Test 21: After PREPARE-only failure, prepareQC stays at genesis
         // Scenario: replica accepts PREPARE but never receives PRE-COMMIT. On timeout,
         // the NEW-VIEW carries genesis prepareQC — next leader won't preserve the
         // failed branch.
         @Test
-        void testViewChangeAfterPrepareKeepsGenesisPrepareQC() throws InterruptedException {
-                Consensus replica = new Consensus("node-3", NODE_IDS, mockLinkManager, service, mockCrypto);
+        void testViewChangeAfterPrepareKeepsGenesisPrepareQC() {
+                Consensus replica = new Consensus("node-3", NODE_IDS, mockLinkManager, service, mockCrypto,
+                                mockPacemaker);
                 replica.start(null);
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
                 // Feed PREPARE from node-0 (view 1 leader)
-                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1, "system",
-                                System.currentTimeMillis());
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1, "system", 0);
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -900,8 +1004,8 @@ class ConsensusTest {
                                 .build();
                 replica.onMessage("node-0", prepareMsg.toByteArray());
 
-                // Wait for pacemaker timeout
-                Thread.sleep(4500);
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+                triggerTimeout();
 
                 // After timeout, NEW-VIEW to node-1 (view 2 leader) should carry
                 // genesis prepareQC (view 0) because prepareQC is only updated in onPreCommit
@@ -927,20 +1031,20 @@ class ConsensusTest {
                 replica.shutdown();
         }
 
-        // Test 21: After PRE-COMMIT, prepareQC is updated — branch preserved
+        // Test 22: After PRE-COMMIT, prepareQC is updated — branch preserved
         // Scenario: replica receives PREPARE and PRE-COMMIT (prepareQC updated to view
         // 1).
         // On timeout, NEW-VIEW carries view-1 prepareQC — next leader must build on
         // this branch.
         @Test
-        void testViewChangeAfterPreCommitUpdatesPrepareQC() throws InterruptedException {
-                Consensus replica = new Consensus("node-3", NODE_IDS, mockLinkManager, service, mockCrypto);
+        void testViewChangeAfterPreCommitUpdatesPrepareQC() {
+                Consensus replica = new Consensus("node-3", NODE_IDS, mockLinkManager, service, mockCrypto,
+                                mockPacemaker);
                 replica.start(null);
                 org.mockito.Mockito.clearInvocations(mockLinkManager);
 
                 // Feed PREPARE from node-0 (view 1 leader)
-                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1, "system",
-                                System.currentTimeMillis());
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd-v1", 1, "system", 0);
                 ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
                                 .setPrepare(PrepareMessage.newBuilder()
@@ -950,23 +1054,20 @@ class ConsensusTest {
                                 .build();
                 replica.onMessage("node-0", prepareMsg.toByteArray());
 
-                // Feed PRE-COMMIT with a prepareQC (viewNumber=0 bypasses sig verification)
                 QuorumCertificate phaseQC = QuorumCertificate.create(
                                 QuorumCertificate.PREPARE, 0, proposed.getNodeHash(), new byte[64]);
                 ConsensusMessage preCommitMsg = ConsensusMessage.newBuilder()
                                 .setViewNumber(1)
-                                .setPreCommit(ist.group29.depchain.network.ConsensusMessages.PreCommitMessage
+                                .setPreCommit(PreCommitMessage
                                                 .newBuilder()
                                                 .setJustify(phaseQC.getProto())
                                                 .build())
                                 .build();
                 replica.onMessage("node-0", preCommitMsg.toByteArray());
 
-                // Wait for pacemaker timeout
-                Thread.sleep(4500);
+                triggerTimeout();
 
                 // NEW-VIEW to node-1 should now carry the UPDATED prepareQC
-                // (which has the proposed node's hash, not genesis)
                 org.mockito.ArgumentCaptor<byte[]> captor = org.mockito.ArgumentCaptor.forClass(byte[].class);
                 org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
                                 .send(org.mockito.ArgumentMatchers.eq("node-1"), captor.capture());
@@ -977,7 +1078,6 @@ class ConsensusTest {
                                 ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
                                 if (msg.hasNewView()) {
                                         QuorumCertificate qc = new QuorumCertificate(msg.getNewView().getJustify());
-                                        // The prepareQC should reference our proposed node, not genesis
                                         if (java.util.Arrays.equals(qc.getNodeHash(), proposed.getNodeHash())) {
                                                 foundUpdatedNewView = true;
                                         }
@@ -988,6 +1088,70 @@ class ConsensusTest {
                 assertTrue(foundUpdatedNewView,
                                 "After PRE-COMMIT, NEW-VIEW should carry updated prepareQC referencing the proposal");
                 replica.shutdown();
+        }
+
+        // Test 23: Byzantine replica replays an old view vote in a new view
+        @Test
+        void testByzantineReplayOldViewVote() {
+                consensus.start(null);
+
+                feedNewView(consensus, "node-1", 1);
+                feedNewView(consensus, "node-2", 1);
+                feedNewView(consensus, "node-3", 1);
+
+                byte[] hash = computeViewNodeHash("cmd", 1);
+
+                ConsensusMessage replayedVote = ConsensusMessage.newBuilder()
+                                .setViewNumber(0)
+                                .setVote(VoteMessage.newBuilder()
+                                                .setPhase(QuorumCertificate.PREPARE)
+                                                .setNodeHash(ByteString.copyFrom(hash))
+                                                .setSignatureShare(ByteString.copyFrom(new byte[128]))
+                                                .build())
+                                .build();
+
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+                consensus.onMessage("node-1", replayedVote.toByteArray());
+
+                // The vote for view 0 should be ignored
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
+                                .broadcast(org.mockito.ArgumentMatchers.any());
+        }
+
+        // Test 24: Pacemaker recovers timeoutTriggered
+        @Test
+        void testPacemakerRecovery() {
+                consensus.start(null);
+
+                feedNewView(consensus, "node-1", 1);
+                feedNewView(consensus, "node-2", 1);
+
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                byte[] hash = computeViewNodeHash("cmd", 1);
+                feedVote(consensus, "node-1", QuorumCertificate.PREPARE, 1, hash);
+
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
+                                .broadcast(org.mockito.ArgumentMatchers.any());
+
+                triggerTimeout();
+
+                org.mockito.ArgumentCaptor<byte[]> captor = org.mockito.ArgumentCaptor.forClass(byte[].class);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
+                                .send(org.mockito.ArgumentMatchers.eq("node-1"), captor.capture());
+
+                boolean foundNewView = false;
+                for (byte[] raw : captor.getAllValues()) {
+                        try {
+                                ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
+                                if (msg.hasNewView() && msg.getViewNumber() == 2) {
+                                        foundNewView = true;
+                                        break;
+                                }
+                        } catch (Exception ignored) {
+                        }
+                }
+                assertTrue(foundNewView, "Should send NEW-VIEW for view 2 after partition timeout");
         }
 
         // Helpers
@@ -1003,8 +1167,6 @@ class ConsensusTest {
         }
 
         private void feedVote(Consensus c, String fromId, String phase, int view, byte[] nodeHash) {
-                // In a real run, this would contain a real signature share.
-                // For the mock, we just need a non-empty ByteString.
                 byte[] dummyShare = new byte[128];
                 ConsensusMessage msg = ConsensusMessage.newBuilder()
                                 .setViewNumber(view)
@@ -1019,7 +1181,6 @@ class ConsensusTest {
 
         /** Compute the node_hash for a placeholder command at a given view. */
         private byte[] computeViewNodeHash(String command, int view) {
-                // Genesis node_hash is the parent
                 byte[] genesisHash = HotStuffNode.genesis().getNodeHash();
                 return CryptoUtils.computeHash(genesisHash, command, view);
         }
