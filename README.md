@@ -15,9 +15,20 @@ Before running the system, generate the RSA keys for the cluster nodes:
 
 ```bash
 cd keygen_script
-./generate_keys.sh
+./setup_pki.sh
 ```
 This script creates public and private keys in the `keys/` directory.
+
+### threshold signatures 
+```bash
+mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.crypto.ThresholdPKISetup"
+```
+
+### Generate client keys
+```bash
+cd keygen_script
+./setup_client.sh client-<id>
+```
 
 ## Compilation
 
