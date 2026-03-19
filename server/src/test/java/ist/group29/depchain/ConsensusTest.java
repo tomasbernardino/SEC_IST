@@ -1184,4 +1184,116 @@ class ConsensusTest {
                 byte[] genesisHash = HotStuffNode.genesis().getNodeHash();
                 return CryptoUtils.computeHash(genesisHash, command, view);
         }
+
+        // Test 24: Exponential Backoff and Reset with Pacemaker
+        // Verifies the 4s timeout fires correctly, the next timeout doubles to 8s,
+        // and a DECIDE message resets the backoff back to 4s.
+        @Test
+        void testExponentialBackoffAndReset() throws Exception {
+                ScheduledExecutorService pacemaker = java.util.concurrent.Executors
+                                .newSingleThreadScheduledExecutor(r -> {
+                                        Thread t = new Thread(r, "TestPacemaker-24");
+                                        t.setDaemon(true);
+                                        return t;
+                                });
+
+                Consensus c = new Consensus("node-3", NODE_IDS, mockLinkManager, service, mockCrypto, pacemaker);
+                c.start(null); // View 1, timeout = 4s
+
+                // After 2 seconds, the 4s timeout should NOT have fired yet.
+                Thread.sleep(2000);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
+                                .send(org.mockito.ArgumentMatchers.eq("node-1"),
+                                                org.mockito.ArgumentMatchers.any());
+
+                // Wait 3 more seconds for the first 4s timeout to fire (view 1 -> 2)
+                Thread.sleep(3000);
+                org.mockito.ArgumentCaptor<byte[]> captor1 = org.mockito.ArgumentCaptor.forClass(byte[].class);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
+                                .send(org.mockito.ArgumentMatchers.eq("node-1"), captor1.capture());
+
+                boolean sentNewView1 = false;
+                for (byte[] raw : captor1.getAllValues()) {
+                        ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
+                        if (msg.hasNewView())
+                                sentNewView1 = true;
+                }
+                assertTrue(sentNewView1, "After 4s timeout, view should advance and NEW-VIEW sent to next leader");
+
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                // Backoff doubled to 8s. At 6s after the first timeout, the second should NOT
+                // have fired yet.
+                Thread.sleep(6000);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
+                                .send(org.mockito.ArgumentMatchers.eq("node-2"),
+                                                org.mockito.ArgumentMatchers.any());
+
+                // Wait 3 more seconds (9s after first timeout, ~14s from start).
+                // The 8s backoff should have fired by now (view 2 -> 3).
+                Thread.sleep(3000);
+                org.mockito.ArgumentCaptor<byte[]> captor2 = org.mockito.ArgumentCaptor.forClass(byte[].class);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
+                                .send(org.mockito.ArgumentMatchers.eq("node-2"), captor2.capture());
+
+                boolean sentNewView2 = false;
+                for (byte[] raw : captor2.getAllValues()) {
+                        ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
+                        if (msg.hasNewView())
+                                sentNewView2 = true;
+                }
+                assertTrue(sentNewView2, "After 8s exponential backoff, view should advance and NEW-VIEW sent");
+
+                // DECIDE in view 3 should reset timeout to 4s.
+                // Currently in view 3 (timeout would be 16s without reset).
+                HotStuffNode proposed = HotStuffNode.genesis().createLeaf("cmd", 3, "system", 0);
+                c.storeBlock(proposed);
+
+                ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(3)
+                                .setPrepare(PrepareMessage.newBuilder()
+                                                .setNode(proposed.getProto())
+                                                .setJustify(QuorumCertificate.genesisQC().getProto())
+                                                .build())
+                                .build();
+                c.onMessage("node-2", prepareMsg.toByteArray());
+
+                QuorumCertificate commitQC = QuorumCertificate.create(QuorumCertificate.COMMIT, 3,
+                                proposed.getNodeHash(), new byte[64]);
+                ConsensusMessage decideMsg = ConsensusMessage.newBuilder()
+                                .setViewNumber(3)
+                                .setDecide(DecideMessage.newBuilder()
+                                                .setJustify(commitQC.getProto())
+                                                .build())
+                                .build();
+                c.onMessage("node-2", decideMsg.toByteArray()); // advances to view 4, resets timeout to 4s
+
+                org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                // View is now 4, DECIDE should have resetted the timeout to 4s
+                // At 3s after reset, timeout should NOT have fired yet.
+                Thread.sleep(3000);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
+                                .send(org.mockito.ArgumentMatchers.eq("node-0"),
+                                                org.mockito.ArgumentMatchers.any());
+
+                // Wait 2 more seconds (5s total). The 4s reset timeout should have fired.
+                Thread.sleep(2000);
+                org.mockito.ArgumentCaptor<byte[]> captor3 = org.mockito.ArgumentCaptor.forClass(byte[].class);
+                org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
+                                .send(org.mockito.ArgumentMatchers.eq("node-0"), captor3.capture());
+
+                boolean sentNewView3 = false;
+                for (byte[] raw : captor3.getAllValues()) {
+                        ConsensusMessage msg = ConsensusMessage.parseFrom(raw);
+                        if (msg.hasNewView() && msg.getViewNumber() == 5)
+                                sentNewView3 = true;
+                }
+                assertTrue(sentNewView3,
+                                "After DECIDE, backoff should reset to 4s — timeout must fire before the old 16s");
+
+                c.shutdown();
+                pacemaker.shutdownNow();
+        }
+
 }

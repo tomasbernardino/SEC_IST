@@ -135,8 +135,18 @@ public class Consensus implements MessageListener {
         }
     }
 
+    private volatile int lastDecidedView = 0;
+
     public CryptoManager getCryptoManager() {
         return cryptoManager;
+    }
+
+    public int getCurrentView() {
+        return curView;
+    }
+
+    public int getLastDecidedView() {
+        return lastDecidedView;
     }
 
     /**
@@ -724,6 +734,7 @@ public class Consensus implements MessageListener {
             }
         }
         lastExecutedNodeHash = ByteString.copyFrom(decidedNode.getNodeHash());
+        lastDecidedView = decidedNode.getViewNumber();
     }
 
     /**

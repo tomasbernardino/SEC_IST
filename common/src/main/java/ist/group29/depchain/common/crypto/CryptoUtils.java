@@ -24,15 +24,23 @@ import javax.crypto.spec.SecretKeySpec;
 public final class CryptoUtils {
 
     private static final String RSA_SIGNATURE_ALG = "SHA256withRSA";
-    private static final String KEY_AGREE_ALG    = "DH";
-    private static final String SECRET_KEY_ALG   = "AES";
-    private static final String MAC_ALG          = "HmacSHA256";
+    private static final String KEY_AGREE_ALG = "DH";
+    private static final String SECRET_KEY_ALG = "AES";
+    private static final String MAC_ALG = "HmacSHA256";
 
-    private CryptoUtils() {} 
+    private CryptoUtils() {
+    }
 
     /** Generate an ephemeral DH key pair for session key establishment */
     public static KeyPair generateDHKeyPair() throws GeneralSecurityException {
         KeyPairGenerator kpg = KeyPairGenerator.getInstance(KEY_AGREE_ALG);
+        kpg.initialize(2048);
+        return kpg.generateKeyPair();
+    }
+
+    /** Generate an RSA key pair for testing or identity */
+    public static KeyPair generateRSAKeyPair() throws GeneralSecurityException {
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
         kpg.initialize(2048);
         return kpg.generateKeyPair();
     }

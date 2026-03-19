@@ -32,20 +32,20 @@ public class AuthenticatedPerfectLink {
     private final StubbornLink sl;
     private final String selfId;
     private final String peerId;
-    private final KeyPair identityKeyPair;   
-    private final PublicKey peerPublicKey;    
-    private final KeyPair dhKeyPair; 
+    private final KeyPair identityKeyPair;
+    private final PublicKey peerPublicKey;
+    private final KeyPair dhKeyPair;
 
-    private final AtomicLong sendSeqCounter = new AtomicLong(0); 
+    private final AtomicLong sendSeqCounter = new AtomicLong(0);
     private final List<byte[]> sendBuffer = new ArrayList<>();
 
     // Duplicate filtering — simple Message-ID deduplication
     private final HashSet<Long> deliveredIds = new HashSet<>();
-    
+
     private volatile SecretKey sessionKey = null;
 
     public AuthenticatedPerfectLink(StubbornLink sl, String selfId, String peerId,
-                                     KeyPair identityKeyPair, PublicKey peerPublicKey) {
+            KeyPair identityKeyPair, PublicKey peerPublicKey) {
         this.sl = sl;
         this.selfId = selfId;
         this.peerId = peerId;
@@ -56,6 +56,10 @@ public class AuthenticatedPerfectLink {
         } catch (GeneralSecurityException e) {
             throw new RuntimeException("Failed to generate DH key pair", e);
         }
+    }
+
+    public boolean isSessionEstablished() {
+        return sessionKey != null;
     }
 
     public void startHandshake() {
@@ -119,24 +123,31 @@ public class AuthenticatedPerfectLink {
         }
     }
 
- 
     public byte[] deliver(Message msg) {
         if (!msg.getSenderId().equals(peerId)) {
             return null;
         }
 
         switch (msg.getPayloadCase()) {
-            case HANDSHAKE:     onHandshake(msg);     return null;
-            case HANDSHAKE_ACK: onHandshakeAck(msg);  return null;
-            case ACK:           onAck(msg);           return null;
-            case DATA:          return onData(msg);
-            default:            return null;
+            case HANDSHAKE:
+                onHandshake(msg);
+                return null;
+            case HANDSHAKE_ACK:
+                onHandshakeAck(msg);
+                return null;
+            case ACK:
+                onAck(msg);
+                return null;
+            case DATA:
+                return onData(msg);
+            default:
+                return null;
         }
     }
 
-
     private void onHandshake(Message msg) {
-        if (sessionKey != null) return; // Prevents replayed handshakes from being processed twice
+        if (sessionKey != null)
+            return; // Prevents replayed handshakes from being processed twice
 
         try {
             Handshake hs = msg.getHandshake();
@@ -152,7 +163,6 @@ public class AuthenticatedPerfectLink {
             PublicKey peerDH = CryptoUtils.decodeDHPublicKey(peerDHPub);
             establishSession(CryptoUtils.computeSharedSecret(dhKeyPair.getPrivate(), peerDH));
 
-            
             byte[] myDHPub = dhKeyPair.getPublic().getEncoded();
             byte[] ackSig = CryptoUtils.sign(identityKeyPair.getPrivate(),
                     CryptoUtils.toBytes(selfId), CryptoUtils.toBytes(peerId), myDHPub);
@@ -168,7 +178,8 @@ public class AuthenticatedPerfectLink {
                     .setHandshakeAck(ack)
                     .build();
 
-            // Sender will retransmit Handshake if lost so there is no need to retransmit HandshakeAck
+            // Sender will retransmit Handshake if lost so there is no need to retransmit
+            // HandshakeAck
             sl.sendOnce(ackMsg, peerId);
             LOGGER.info("[APL] Handshake completed with " + peerId + " (responder)");
         } catch (GeneralSecurityException e) {
@@ -177,7 +188,8 @@ public class AuthenticatedPerfectLink {
     }
 
     private void onHandshakeAck(Message msg) {
-        if (sessionKey != null) return; // Prevents replayed handshakes from being processed twice
+        if (sessionKey != null)
+            return; // Prevents replayed handshakes from being processed twice
 
         try {
             HandshakeAck ack = msg.getHandshakeAck();
@@ -191,7 +203,7 @@ public class AuthenticatedPerfectLink {
             }
 
             PublicKey peerDH = CryptoUtils.decodeDHPublicKey(peerDHPub);
-            
+
             establishSession(CryptoUtils.computeSharedSecret(dhKeyPair.getPrivate(), peerDH));
 
             sl.cancelRetransmission(peerId, HANDSHAKE_SEQ);
@@ -202,7 +214,8 @@ public class AuthenticatedPerfectLink {
     }
 
     private synchronized void establishSession(SecretKey key) {
-        if (sessionKey != null) return; 
+        if (sessionKey != null)
+            return;
         sessionKey = key;
 
         for (byte[] payload : sendBuffer) {
@@ -212,7 +225,8 @@ public class AuthenticatedPerfectLink {
     }
 
     private byte[] onData(Message msg) {
-        if (sessionKey == null) return null;
+        if (sessionKey == null)
+            return null;
 
         try {
             DataMessage data = msg.getData();
@@ -243,7 +257,8 @@ public class AuthenticatedPerfectLink {
     }
 
     private void onAck(Message msg) {
-        if (sessionKey == null) return;
+        if (sessionKey == null)
+            return;
 
         try {
             AckMessage ack = msg.getAck();
