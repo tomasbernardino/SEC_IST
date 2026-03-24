@@ -16,7 +16,9 @@ message Transaction {
     uint64 gas_price = 5;  // Price per gas unit in DepCoin. Must be > 0
     uint64 gas_limit = 6;  // Max gas units the sender is willing to spend Must be > 0
     bytes  data      = 7;  // EVM calldata for contract calls
-    bytes  signature = 8;  // RSA signature over (from, to, value, nonce, gas_price, gas_limit, data)
+    bytes  sig_v     = 8;  // ECDSA signature v component
+    bytes  sig_r     = 9;  // ECDSA signature r component
+    bytes  sig_s     = 10; // ECDSA signature s component
 }
 
 // --- Transaction Response (simplified Ethereum Receipt) ---
@@ -37,4 +39,22 @@ message TransactionResponse {
     uint64 gas_used          = 4;  // Actual gas consumed by execution
     bytes  return_data       = 5;  // EVM return data (function return values, or new contract address for deploys)
     string error_message     = 6;  // optional human-readable detail about failures
+}
+
+// FIXME: Remove after migration
+message ClientResponse {
+    string status    = 1;
+    string value     = 2; 
+    int64  timestamp = 3;
+}
+
+message ClientRequest {
+    enum Operation {
+        APPEND = 0;
+    }
+    Operation op      = 1;
+    string    value   = 2; // the command
+    int64     timestamp = 3;
+    bytes     signature = 4; // RSA signature of (op, value, timestamp)
+
 }

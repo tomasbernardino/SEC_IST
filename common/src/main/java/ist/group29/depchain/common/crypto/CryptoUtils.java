@@ -1,22 +1,33 @@
 package ist.group29.depchain.common.crypto;
 
+import java.io.IOException;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.GeneralSecurityException;
+import java.security.InvalidAlgorithmParameterException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.NoSuchProviderException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.SignatureException;
 import java.security.spec.X509EncodedKeySpec;
 
 import javax.crypto.KeyAgreement;
 import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+
+import org.web3j.crypto.ECKeyPair;
+import org.web3j.crypto.Hash;
+import org.web3j.crypto.Keys;
+import org.web3j.crypto.Sign;
 
 /**
  * Cryptographic utilities for the DepChain network layer
@@ -130,6 +141,88 @@ public final class CryptoUtils {
         if (b.length > maxBytes)
             sb.append("...");
         return sb.toString();
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // ECDSA (secp256k1) — Blockchain transaction signing
+    // ────────────────────────────────────────────────────────────
+
+    /**
+     * Sign data with an ECDSA private key (secp256k1).
+     * The data parts are keccak-hashed before signing.
+     */
+    public static ClientSignature ecSign(ECKeyPair keyPair, byte[]... parts) {
+        byte[] hash = keccakHash(parts);
+        Sign.SignatureData sig = Sign.signMessage(hash, keyPair);
+        return new ClientSignature(sig);
+    }
+
+    /**
+     * Recover the signer's public key from an ECDSA signature (ecrecover).
+     * Returns the public key as a BigInteger.
+     */
+    public static BigInteger ecRecover(ClientSignature signature, byte[]... parts)
+            throws SignatureException {
+        byte[] hash = keccakHash(parts);
+        return Sign.signedMessageToKey(hash, signature.toSignatureData());
+    }
+
+    /**
+     * Verify that the recovered address from an ECDSA signature matches the
+     * expected sender.
+     */
+    public static boolean ecVerify(ClientSignature signature, String expectedAddress, byte[]... parts) {
+        try {
+            BigInteger recoveredKey = ecRecover(signature, parts);
+            String recoveredAddress = Keys.getAddress(recoveredKey);
+            String normalizedExpected = expectedAddress.startsWith("0x")
+                    ? expectedAddress.substring(2).toLowerCase()
+                    : expectedAddress.toLowerCase();
+            return recoveredAddress.equalsIgnoreCase(normalizedExpected);
+        } catch (SignatureException e) {
+            return false;
+        }
+    }
+
+    /** Derive an Ethereum-standard address from an ECDSA key pair. */
+    public static String getAddress(ECKeyPair keyPair) {
+        return Keys.getAddress(keyPair);
+    }
+
+    /** Load an ECDSA key pair from a .key file (web3j serialized format). */
+    public static ECKeyPair loadECKeyPair(Path keyFile) throws IOException {
+        byte[] bytes = java.nio.file.Files.readAllBytes(keyFile);
+        return Keys.deserialize(bytes);
+    }
+
+    /** Create a new random ECDSA key pair (secp256k1). */
+    public static ECKeyPair createECKeyPair() {
+        try {
+            return Keys.createEcKeyPair();
+        } catch (java.security.InvalidAlgorithmParameterException
+                | NoSuchAlgorithmException
+                | java.security.NoSuchProviderException e) {
+            throw new RuntimeException("Failed to create EC key pair", e);
+        }
+    }
+
+    /** Keccak-256 hash of concatenated byte arrays. */
+    public static byte[] keccakHash(byte[]... parts) {
+        byte[] concatenated = concatenate(parts);
+        return Hash.sha3(concatenated);
+    }
+
+    private static byte[] concatenate(byte[]... arrays) {
+        int totalLen = 0;
+        for (byte[] a : arrays)
+            totalLen += a.length;
+        byte[] result = new byte[totalLen];
+        int pos = 0;
+        for (byte[] a : arrays) {
+            System.arraycopy(a, 0, result, pos, a.length);
+            pos += a.length;
+        }
+        return result;
     }
 
 }

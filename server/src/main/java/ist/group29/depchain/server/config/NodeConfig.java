@@ -15,14 +15,13 @@ import ist.group29.depchain.common.network.ProcessInfo;
 
 /**
  * Immutable configuration bundle for a single DepChain node.
-
+ * Transaction verification uses ecrecover — no address-to-key map needed.
  */
 public record NodeConfig(
         ProcessInfo self,
         Map<String, ProcessInfo> peers,
         KeyPair identityKeyPair,
-        Map<String, PublicKey> peerPublicKeys
-) {
+        Map<String, PublicKey> peerPublicKeys) {
 
     public static NodeConfig load(String selfId, Path configPath, Path keysDir, char[] password)
             throws IOException, GeneralSecurityException {
@@ -44,9 +43,7 @@ public record NodeConfig(
         Path truststorePath = keysDir.resolve("truststore.p12");
         Map<String, PublicKey> peerPublicKeys = new HashMap<>();
 
-        // Load all nodes and clients from the truststore/keys directory
-        // In a real system, we might have a specific clients.config
-        // For Stage 1, we'll try to load any available client-X.p12 public keys
+        // Load all node public keys from the truststore
         for (String id : allNodes.keySet()) {
             if (!id.equals(selfId)) {
                 PublicKey pubKey = KeyStoreManager.loadPublicKey(truststorePath, id, password);
@@ -54,13 +51,13 @@ public record NodeConfig(
             }
         }
 
-        // Proactively load client keys if they exist in the keys directory
+        // Proactively load client RSA keys for network auth (dynamic APL creation)
         try (java.util.stream.Stream<Path> stream = java.nio.file.Files.list(keysDir)) {
             stream.filter(p -> p.getFileName().toString().startsWith("client-") && p.toString().endsWith(".p12"))
                     .forEach(p -> {
                         String clientId = p.getFileName().toString().replace(".p12", "");
                         try {
-                            PublicKey clientPubKey = KeyStoreManager.loadPublicKey(p, clientId, password);
+                            PublicKey clientPubKey = KeyStoreManager.loadPublicKey(truststorePath, clientId, password);
                             peerPublicKeys.put(clientId, clientPubKey);
                         } catch (Exception e) {
                             // Ignore clients that fail to load
