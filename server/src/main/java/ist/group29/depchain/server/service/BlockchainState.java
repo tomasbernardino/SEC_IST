@@ -1,9 +1,5 @@
 package ist.group29.depchain.server.service;
 
-import ist.group29.depchain.client.ClientMessages.Transaction;
-import ist.group29.depchain.client.ClientMessages.TransactionResponse;
-import ist.group29.depchain.common.crypto.CryptoUtils;
-
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -13,6 +9,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 import com.google.gson.Gson;
@@ -20,7 +17,13 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import java.util.logging.Logger;
+
+import ist.group29.depchain.client.ClientMessages.Transaction;
+import ist.group29.depchain.client.ClientMessages.TransactionResponse;
+import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.server.service.account.BlockchainAccount;
+import ist.group29.depchain.server.service.account.ContractAccount;
+import ist.group29.depchain.server.service.account.EOA;
 
 /**
  * World state manager for accounts (EOA and Contract).

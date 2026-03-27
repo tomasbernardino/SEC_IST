@@ -1,26 +1,36 @@
 package ist.group29.depchain.server.consensus;
 
-import com.google.protobuf.ByteString;
-import com.google.protobuf.InvalidProtocolBufferException;
-import ist.group29.depchain.common.network.LinkManager;
-import ist.group29.depchain.common.network.EnvelopeFactory;
-import ist.group29.depchain.network.ConsensusMessages;
-import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
-import ist.group29.depchain.network.ConsensusMessages.VoteMessage;
-import ist.group29.depchain.network.ConsensusMessages.NewViewMessage;
-import ist.group29.depchain.network.ConsensusMessages.PrepareMessage;
-import ist.group29.depchain.network.ConsensusMessages.PreCommitMessage;
-import ist.group29.depchain.network.ConsensusMessages.CommitMessage;
-import ist.group29.depchain.network.ConsensusMessages.DecideMessage;
-import ist.group29.depchain.network.ConsensusMessages.SyncRequest;
-import ist.group29.depchain.network.ConsensusMessages.SyncResponse;
-import ist.group29.depchain.client.ClientMessages.Block;
-import ist.group29.depchain.server.crypto.CryptoManager;
-import ist.group29.depchain.common.crypto.CryptoUtils;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import com.google.protobuf.ByteString;
+
+import ist.group29.depchain.client.ClientMessages.Block;
+import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.common.network.EnvelopeFactory;
+import ist.group29.depchain.common.network.LinkManager;
+import ist.group29.depchain.network.ConsensusMessages;
+import ist.group29.depchain.network.ConsensusMessages.CommitMessage;
+import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
+import ist.group29.depchain.network.ConsensusMessages.DecideMessage;
+import ist.group29.depchain.network.ConsensusMessages.NewViewMessage;
+import ist.group29.depchain.network.ConsensusMessages.PreCommitMessage;
+import ist.group29.depchain.network.ConsensusMessages.PrepareMessage;
+import ist.group29.depchain.network.ConsensusMessages.SyncRequest;
+import ist.group29.depchain.network.ConsensusMessages.SyncResponse;
+import ist.group29.depchain.network.ConsensusMessages.VoteMessage;
+import ist.group29.depchain.server.crypto.CryptoManager;
+import ist.group29.depchain.server.service.TransactionManager;
 
 /**
  * Basic HotStuff consensus engine - Algorithm 2 of the paper.
@@ -42,6 +52,7 @@ public class Consensus {
     private final int quorum;
     private final LinkManager linkManager;
     private final DecideListener decideListener;
+    private final TransactionManager transactionManager;
     private CryptoManager cryptoManager;
 
     private final Map<ByteString, HotStuffNode> blockStore = new ConcurrentHashMap<>();
@@ -79,20 +90,19 @@ public class Consensus {
 
     private volatile PendingPrepare pendingPrepare = null;
 
-    //TODO also add TxManager
     public Consensus(String selfId, List<String> allNodeIds,
-            LinkManager linkManager, DecideListener decideListener, String keysDir) {
-        this(selfId, allNodeIds, linkManager, decideListener, createDefaultCrypto(selfId, keysDir),
+            LinkManager linkManager, DecideListener decideListener, TransactionManager transactionManager, String keysDir) {
+        this(selfId, allNodeIds, linkManager, decideListener, transactionManager, createDefaultCrypto(selfId, keysDir),
                 createDefaultPacemaker());
     }
 
     public Consensus(String selfId, List<String> allNodeIds,
-            LinkManager linkManager, DecideListener decideListener, CryptoManager cryptoManager) {
-        this(selfId, allNodeIds, linkManager, decideListener, cryptoManager, createDefaultPacemaker());
+            LinkManager linkManager, DecideListener decideListener, TransactionManager transactionManager, CryptoManager cryptoManager) {
+        this(selfId, allNodeIds, linkManager, decideListener, transactionManager, cryptoManager, createDefaultPacemaker());
     }
 
     public Consensus(String selfId, List<String> allNodeIds,
-            LinkManager linkManager, DecideListener decideListener, CryptoManager cryptoManager,
+            LinkManager linkManager, DecideListener decideListener, TransactionManager transactionManager, CryptoManager cryptoManager,
             ScheduledExecutorService pacemaker) {
         this.selfId = selfId;
         this.sortedNodeIds = new ArrayList<>(allNodeIds);
@@ -102,6 +112,7 @@ public class Consensus {
         this.quorum = n - f;
         this.linkManager = linkManager;
         this.decideListener = decideListener;
+        this.transactionManager = transactionManager;
         this.cryptoManager = cryptoManager;
         this.pacemaker = pacemaker;
 
@@ -212,8 +223,7 @@ public class Consensus {
         if (newViewMessages == null ||newViewMessages.size() < quorum || highQC == null)
             return;
 
-        //TODO TxManager instead
-        Block block = decideListener.buildBlock();
+        Block block = transactionManager.buildBlock();
         if (block == null || block.getTransactionsCount() == 0) {
             scheduleRetry();
             return;
@@ -280,10 +290,9 @@ public class Consensus {
             pendingPrepare = new PendingPrepare(senderId, msg, view);
             return;
         }
-        // TODO TxManager instead of service
 
-        if (!decideListener.validateBlock(proposedNode.getBlock())) {
-            LOG.warning("[Consensus] PREPARE rejected by Service validation in view " + view);
+        if (!transactionManager.validateBlock(proposedNode.getBlock())) {
+            LOG.warning("[Consensus] PREPARE rejected by TransactionManager validation in view " + view);
             return;
         }
 

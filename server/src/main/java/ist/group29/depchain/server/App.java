@@ -1,14 +1,15 @@
 package ist.group29.depchain.server;
 
-import ist.group29.depchain.server.consensus.Consensus;
-import ist.group29.depchain.server.config.NodeConfig;
-import ist.group29.depchain.common.network.LinkManager;
-import ist.group29.depchain.server.service.Service;
-
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
+
+import ist.group29.depchain.common.network.LinkManager;
+import ist.group29.depchain.server.config.NodeConfig;
+import ist.group29.depchain.server.consensus.Consensus;
+import ist.group29.depchain.server.service.Service;
+import ist.group29.depchain.server.service.TransactionManager;
 
 /**
  *
@@ -37,7 +38,7 @@ public class App {
         NodeConfig config = NodeConfig.load(selfId, configPath, keysDir, password);
 
         Service service = new Service(); //TODO should have a linkManager to send messages to the client
-        // TODO create TxManager
+        TransactionManager transactionManager = new TransactionManager(service.getState());
         List<String> allNodeIds = new ArrayList<>(config.peers().keySet());
         allNodeIds.add(selfId);
 
@@ -45,11 +46,9 @@ public class App {
                 config.self(), config.peers(),
                 config.identityKeyPair(), config.peerPublicKeys());
 
-        // TODO TxManager too alongside service and linkManager
-        Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service, keysDir.toString());
+        Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service, transactionManager, keysDir.toString());
 
-        // TODO TxManager instead of service
-        linkManager.setMessageListener(new MessageRouter(consensus, service));
+        linkManager.setMessageListener(new MessageRouter(consensus, transactionManager));
 
         linkManager.start();
 

@@ -1,4 +1,4 @@
-package ist.group29.depchain.server.service;
+package ist.group29.depchain.server.service.account;
 
 import java.math.BigInteger;
 import java.util.HashMap;

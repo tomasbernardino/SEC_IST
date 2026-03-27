@@ -1,12 +1,13 @@
 package ist.group29.depchain.server;
 
+import java.util.logging.Logger;
+
 import com.google.protobuf.InvalidProtocolBufferException;
+
 import ist.group29.depchain.common.network.MessageListener;
 import ist.group29.depchain.network.NetworkMessages.Envelope;
 import ist.group29.depchain.server.consensus.Consensus;
-import ist.group29.depchain.server.service.Service;
-
-import java.util.logging.Logger;
+import ist.group29.depchain.server.service.TransactionManager;
 
 /**
  * Dispatches incoming network payloads to the correct handler.
@@ -15,18 +16,18 @@ import java.util.logging.Logger;
  * envelope and switches on the payload case for deterministic routing:
  *
  *   CONSENSUS   → consensus.onMessage()
- *   TRANSACTION → service.addPendingTx()
+ *   TRANSACTION → transactionManager.addPendingTx()
  */
 public class MessageRouter implements MessageListener {
 
     private static final Logger LOG = Logger.getLogger(MessageRouter.class.getName());
 
     private final Consensus consensus;
-    private final Service service;
+    private final TransactionManager transactionManager;
 
-    public MessageRouter(Consensus consensus, Service service) {
+    public MessageRouter(Consensus consensus, TransactionManager transactionManager) {
         this.consensus = consensus;
-        this.service = service;
+        this.transactionManager = transactionManager;
     }
 
     @Override
@@ -41,7 +42,7 @@ public class MessageRouter implements MessageListener {
 
         switch (env.getPayloadCase()) {
             case CONSENSUS    -> consensus.onMessage(senderId, env.getConsensus());
-            case TRANSACTION  -> service.addPendingTx(env.getTransaction());
+            case TRANSACTION  -> transactionManager.addPendingTx(env.getTransaction());
             case TRANSACTION_RESPONSE -> LOG.fine("[Router] TransactionResponse received (no handler yet)");
             case PAYLOAD_NOT_SET -> LOG.warning("[Router] Empty envelope from " + senderId);
         }

@@ -23,6 +23,9 @@ import ist.group29.depchain.client.ClientMessages.Transaction;
 import ist.group29.depchain.client.ClientMessages.TransactionResponse;
 import ist.group29.depchain.client.ClientMessages.TransactionStatus;
 import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.server.service.account.BlockchainAccount;
+import ist.group29.depchain.server.service.account.ContractAccount;
+import ist.group29.depchain.server.service.account.EOA;
 
 /**
  * TransactionExecutor ensures that every transaction is processed deterministically and

@@ -18,13 +18,4 @@ public interface DecideListener {
      */
     void onDecide(Block block, int viewNumber);
 
-    // TODO should be TxManager
-    /** Called by leader to assemble a block of transactions. */
-    Block buildBlock();
-
-    // TODO should be TxManager
-    /** Called by replicas on PREPARE to validate transactions before voting. */
-    boolean validateBlock(Block block);
-    
-
 }
