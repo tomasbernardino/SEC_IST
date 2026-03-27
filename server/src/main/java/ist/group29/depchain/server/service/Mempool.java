@@ -76,15 +76,17 @@ public class Mempool {
         }
     }
 
-    private String getHash(Transaction tx) {
+    public String getHash(Transaction tx) {
         return CryptoUtils.bytesToHex(CryptoUtils.sha256(tx.toByteArray()));
     }
 
+    // FIXME: Not used
     public synchronized void clear() {
         txsBySender.clear();
         seenHashes.clear();
     }
 
+    // FIXME: Not used
     public synchronized int size() {
         return seenHashes.size();
     }

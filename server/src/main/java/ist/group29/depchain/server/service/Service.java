@@ -23,20 +23,12 @@ public class Service implements DecideListener {
     private final BlockchainState state;
     private final TransactionManager transactionManager;
 
-    public Service() {
+    public Service(BlockchainState state, TransactionManager transactionManager) {
         LOG.info("[Service] Initializing. Checking storage directory...");
 
-        BlockchainState loaded = null;
-        try {
-            // Try recovery from latest block record
-            loaded = BlockchainState.loadLatestState();
-        } catch (Exception e) {
-            LOG.warning("[Service] Failed to load existing state, starting fresh: " + e.getMessage());
-        }
-
-        this.state = (loaded != null) ? loaded : new BlockchainState();
+        this.state = state;
+        this.transactionManager = transactionManager;
         this.executor = new TransactionExecutor(state);
-        this.transactionManager = new TransactionManager(state);
     }
 
     @Override
@@ -64,8 +56,8 @@ public class Service implements DecideListener {
         // Remove the block's committed transactions from the mempool
         transactionManager.removeCommittedTxs(block.getTransactionsList());
         blockchain.add(block);
+        transactionManager.sendResponses(results);
     }
-
 
     public BlockchainState getState() {
         return state;

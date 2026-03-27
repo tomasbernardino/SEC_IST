@@ -6,12 +6,20 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
+
 import ist.group29.depchain.client.ClientMessages.Block;
 import ist.group29.depchain.client.ClientMessages.Transaction;
+import ist.group29.depchain.client.ClientMessages.TransactionResponse;
+import ist.group29.depchain.client.ClientMessages.TransactionStatus;
 import ist.group29.depchain.common.crypto.ClientSignature;
 import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.common.network.LinkManager;
+import ist.group29.depchain.network.NetworkMessages.Envelope;
 import ist.group29.depchain.server.service.account.BlockchainAccount;
 import ist.group29.depchain.server.service.account.EOA;
+import com.google.protobuf.ByteString;
 
 public class TransactionManager {
 
@@ -20,9 +28,14 @@ public class TransactionManager {
 
     private final BlockchainState state;
     private final Mempool mempool = new Mempool();
+    private final LinkManager linkManager;
 
-    public TransactionManager(BlockchainState state) {
+    // Mapping from Transaction Hash (hex) to the senderId (Process ID) of the client
+    private final Map<String, String> txHashToSenderId = new ConcurrentHashMap<>();
+
+    public TransactionManager(BlockchainState state, LinkManager linkManager) {
         this.state = state;
+        this.linkManager = linkManager;
     }
 
     public Block buildBlock() {
@@ -95,7 +108,7 @@ public class TransactionManager {
         if (block == null || block.getTransactionsCount() == 0)
             return false;
         for (Transaction tx : block.getTransactionsList()) {
-            if (!isTransactionValid(tx)) {
+            if (validateIncomingTx(tx) != null) {
                 LOG.warning("[TransactionManager] Block contains invalid transaction from " + tx.getFrom());
                 return false;
             }
@@ -105,12 +118,33 @@ public class TransactionManager {
 
     /**
      * Entry point for new client transactions. Sets them to the mempool after validation.
+     * If the transaction is rejected, sends the response to the client that sent it.
      */
-    public boolean addPendingTx(Transaction tx) {
-        if (isTransactionValid(tx)) {
-            return mempool.addTransaction(tx);
+    public boolean addPendingTx(String senderId, Transaction tx) {
+        TransactionResponse rejection = validateIncomingTx(tx);
+        if (rejection != null) {
+            Envelope responseEnv = Envelope.newBuilder()
+                    .setTransactionResponse(rejection)
+                    .build();
+            linkManager.send(senderId, responseEnv.toByteArray());
+            return false;
         }
-        return false;
+
+        String hash = mempool.getHash(tx);
+        if (mempool.addTransaction(tx)) {
+            txHashToSenderId.put(hash, senderId);
+            return true;
+        } else {
+            Envelope responseEnv = Envelope.newBuilder()
+                    .setTransactionResponse(buildResponse(tx, TransactionStatus.FAILURE, "Duplicate transaction hash " + hash))
+                    .build();
+            linkManager.send(senderId, responseEnv.toByteArray());
+            return false;
+        }
+    }
+
+    public String getSenderIdAndRemove(String txHash) {
+        return txHashToSenderId.remove(txHash);
     }
 
     /**
@@ -120,46 +154,51 @@ public class TransactionManager {
         mempool.removeCommittedTxs(transactions);
     }
 
-    private boolean isTransactionValid(Transaction tx) {
-        LOG.info("[TransactionManager] Pure-validating transaction from " + tx.getFrom() + " (nonce=" + tx.getNonce() + ")");
+    /**
+     * Validates an incoming transaction.
+     * @return A TransactionResponse if the transaction is invalid, null otherwise.
+     */
+    private TransactionResponse validateIncomingTx(Transaction tx) {
+        LOG.info("[TransactionManager] Validating transaction from " + tx.getFrom() + " (nonce=" + tx.getNonce() + ")");
 
         // Intrinsic Gas Check
         long intrinsicGas = TransactionExecutor.calculateIntrinsicGas(tx);
         if (tx.getGasLimit() < intrinsicGas) {
-            LOG.warning("[TransactionManager] Transaction rejected: gas_limit (" + tx.getGasLimit() + ") < intrinsic_gas ("
-                    + intrinsicGas + ")");
-            return false;
+            String msg = "gas_limit (" + tx.getGasLimit() + ") < intrinsic_gas (" + intrinsicGas + ")";
+            LOG.warning("[TransactionManager] Transaction rejected: " + msg);
+            return buildResponse(tx, TransactionStatus.OUT_OF_GAS, msg);
         }
 
         String senderAddr = tx.getFrom().replace("0x", "").toLowerCase();
         BlockchainAccount account = state.getAccount(senderAddr);
 
         if (account == null) {
-            LOG.warning("[TransactionManager] Transaction rejected: sender account " + senderAddr + " does not exist");
-            return false;
+            String msg = "sender account " + senderAddr + " does not exist";
+            LOG.warning("[TransactionManager] Transaction rejected: " + msg);
+            return buildResponse(tx, TransactionStatus.FAILURE, msg); // FIXME: Or custom status
         }
 
         if (!(account instanceof EOA eoa)) {
-            LOG.warning("[TransactionManager] Transaction rejected: sender " + senderAddr + " is a contract, not an EOA");
-            return false;
+            String msg = "sender " + senderAddr + " is a contract, not an EOA";
+            LOG.warning("[TransactionManager] Transaction rejected: " + msg);
+            return buildResponse(tx, TransactionStatus.FAILURE, msg);
         }
 
         // Nonce check
         if (tx.getNonce() < eoa.getNonce()) {
-            LOG.warning("[TransactionManager] Transaction rejected: nonce too low (expected >= " + eoa.getNonce() + ", got "
-                    + tx.getNonce() + ")");
-            return false;
+            String msg = "nonce too low (expected >= " + eoa.getNonce() + ", got " + tx.getNonce() + ")";
+            LOG.warning("[TransactionManager] Transaction rejected: " + msg);
+            return buildResponse(tx, TransactionStatus.INVALID_NONCE, msg);
         }
 
-        // Fund check: balance >= value + (gas_limit * gas_price)
-        BigInteger gasFee = BigInteger.valueOf(tx.getGasLimit())
-                .multiply(BigInteger.valueOf(tx.getGasPrice()));
+        // Fund check
+        BigInteger gasFee = BigInteger.valueOf(tx.getGasLimit()).multiply(BigInteger.valueOf(tx.getGasPrice()));
         BigInteger totalCost = gasFee.add(BigInteger.valueOf(tx.getValue()));
 
         if (eoa.getBalance().compareTo(totalCost) < 0) {
-            LOG.warning("[TransactionManager] Transaction rejected: insufficient funds (cost=" + totalCost + ", balance="
-                    + eoa.getBalance() + ")");
-            return false;
+            String msg = "insufficient funds (cost=" + totalCost + ", balance=" + eoa.getBalance() + ")";
+            LOG.warning("[TransactionManager] Transaction rejected: " + msg);
+            return buildResponse(tx, TransactionStatus.INSUFFICIENT_FUNDS, msg);
         }
 
         // Signature check
@@ -182,12 +221,37 @@ public class TransactionManager {
 
             if (!sigValid) {
                 LOG.warning("[TransactionManager] Transaction rejected: invalid ECDSA signature from sender " + tx.getFrom());
-                return false;
+                return buildResponse(tx, TransactionStatus.INVALID_SIGNATURE, "Invalid signature");
             }
         } catch (Exception e) {
             LOG.warning("[TransactionManager] Transaction rejected: error during signature recovery: " + e.getMessage());
-            return false;
+            return buildResponse(tx, TransactionStatus.INVALID_SIGNATURE, "Signature error: " + e.getMessage());
         }
-        return true;
+
+        return null; // Valid
+    }
+
+    private TransactionResponse buildResponse(Transaction tx, TransactionStatus status, String error) {
+        return TransactionResponse.newBuilder()
+                .setStatus(status)
+                .setTransactionHash(ByteString.copyFrom(CryptoUtils.sha256(tx.toByteArray())))
+                .setErrorMessage(error)
+                .build();
+    }
+
+    public void sendResponses(List<TransactionResponse> results) {
+        if (linkManager != null) {
+            for (TransactionResponse res : results) {
+                String txHash = CryptoUtils.bytesToHex(res.getTransactionHash().toByteArray());
+                String senderId = getSenderIdAndRemove(txHash);
+                if (senderId != null) {
+                    LOG.info("[Service] Sending final receipt for " + txHash + " to " + senderId);
+                    Envelope env = Envelope.newBuilder()
+                            .setTransactionResponse(res)
+                            .build();
+                    linkManager.send(senderId, env.toByteArray());
+                }
+            }
+        }
     }
 }

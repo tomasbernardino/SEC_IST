@@ -8,6 +8,7 @@ import java.util.logging.Logger;
 import ist.group29.depchain.common.network.LinkManager;
 import ist.group29.depchain.server.config.NodeConfig;
 import ist.group29.depchain.server.consensus.Consensus;
+import ist.group29.depchain.server.service.BlockchainState;
 import ist.group29.depchain.server.service.Service;
 import ist.group29.depchain.server.service.TransactionManager;
 
@@ -36,15 +37,24 @@ public class App {
 
         LOG.info("[App] Loading configuration for " + selfId + "...");
         NodeConfig config = NodeConfig.load(selfId, configPath, keysDir, password);
-
-        Service service = new Service(); //TODO should have a linkManager to send messages to the client
-        TransactionManager transactionManager = new TransactionManager(service.getState());
-        List<String> allNodeIds = new ArrayList<>(config.peers().keySet());
-        allNodeIds.add(selfId);
+        BlockchainState state;
+        try {
+            state = BlockchainState.loadLatestState();
+        } catch (Exception e) {
+            LOG.warning("[App] Failed to load existing state, starting fresh: " + e.getMessage());
+            state = new BlockchainState();
+        }
 
         LinkManager linkManager = new LinkManager(
                 config.self(), config.peers(),
                 config.identityKeyPair(), config.peerPublicKeys());
+
+        TransactionManager transactionManager = new TransactionManager(state, linkManager);
+
+        Service service = new Service(state, transactionManager);
+        
+        List<String> allNodeIds = new ArrayList<>(config.peers().keySet());
+        allNodeIds.add(selfId);
 
         Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service, transactionManager, keysDir.toString());
 

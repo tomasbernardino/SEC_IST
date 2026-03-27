@@ -42,7 +42,7 @@ public class MessageRouter implements MessageListener {
 
         switch (env.getPayloadCase()) {
             case CONSENSUS    -> consensus.onMessage(senderId, env.getConsensus());
-            case TRANSACTION  -> transactionManager.addPendingTx(env.getTransaction());
+            case TRANSACTION  -> transactionManager.addPendingTx(senderId, env.getTransaction());
             case TRANSACTION_RESPONSE -> LOG.fine("[Router] TransactionResponse received (no handler yet)");
             case PAYLOAD_NOT_SET -> LOG.warning("[Router] Empty envelope from " + senderId);
         }
