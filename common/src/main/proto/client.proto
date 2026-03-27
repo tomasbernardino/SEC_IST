@@ -41,20 +41,10 @@ message TransactionResponse {
     string error_message     = 6;  // optional human-readable detail about failures
 }
 
-// FIXME: Remove after migration
-message ClientResponse {
-    string status    = 1;
-    string value     = 2; 
-    int64  timestamp = 3;
-}
-
-message ClientRequest {
-    enum Operation {
-        APPEND = 0;
-    }
-    Operation op      = 1;
-    string    value   = 2; // the command
-    int64     timestamp = 3;
-    bytes     signature = 4; // RSA signature of (op, value, timestamp)
-
+message Block {
+    uint64 block_number      = 1;
+    string block_hash        = 2;  // Hash of the transactions
+    string previous_hash     = 3;  // Hash of the parent block
+    repeated Transaction transactions = 4;
+    repeated TransactionResponse receipts = 5; // Results of execution
 }
