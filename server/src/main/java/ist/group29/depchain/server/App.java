@@ -3,7 +3,6 @@ package ist.group29.depchain.server;
 import ist.group29.depchain.server.consensus.Consensus;
 import ist.group29.depchain.server.config.NodeConfig;
 import ist.group29.depchain.common.network.LinkManager;
-import ist.group29.depchain.common.network.MessageListener;
 import ist.group29.depchain.server.service.Service;
 
 import java.nio.file.Path;
@@ -37,8 +36,8 @@ public class App {
         LOG.info("[App] Loading configuration for " + selfId + "...");
         NodeConfig config = NodeConfig.load(selfId, configPath, keysDir, password);
 
-        Service service = new Service();
-
+        Service service = new Service(); //TODO should have a linkManager to send messages to the client
+        // TODO create TxManager
         List<String> allNodeIds = new ArrayList<>(config.peers().keySet());
         allNodeIds.add(selfId);
 
@@ -46,9 +45,11 @@ public class App {
                 config.self(), config.peers(),
                 config.identityKeyPair(), config.peerPublicKeys());
 
+        // TODO TxManager too alongside service and linkManager
         Consensus consensus = new Consensus(selfId, allNodeIds, linkManager, service, keysDir.toString());
 
-        linkManager.setMessageListener(consensus::onMessage);
+        // TODO TxManager instead of service
+        linkManager.setMessageListener(new MessageRouter(consensus, service));
 
         linkManager.start();
 
@@ -59,7 +60,7 @@ public class App {
         Thread.sleep(2000);
 
         LOG.info("[App] Starting HotStuff consensus view 1...");
-        consensus.start("cmd-initial");
+        consensus.start();
 
         Thread.currentThread().join();
     }

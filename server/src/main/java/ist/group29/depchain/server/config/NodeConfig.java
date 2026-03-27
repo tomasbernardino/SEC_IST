@@ -15,7 +15,6 @@ import ist.group29.depchain.common.network.ProcessInfo;
 
 /**
  * Immutable configuration bundle for a single DepChain node.
- * Transaction verification uses ecrecover — no address-to-key map needed.
  */
 public record NodeConfig(
         ProcessInfo self,

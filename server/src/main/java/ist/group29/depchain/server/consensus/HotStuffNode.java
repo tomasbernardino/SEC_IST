@@ -2,6 +2,7 @@ package ist.group29.depchain.server.consensus;
 
 import com.google.protobuf.ByteString;
 
+import ist.group29.depchain.client.ClientMessages.Block;
 import ist.group29.depchain.common.crypto.CryptoUtils;
 import ist.group29.depchain.network.ConsensusMessages;
 
@@ -18,11 +19,9 @@ public class HotStuffNode {
         GENESIS = new HotStuffNode(
                 ConsensusMessages.HotStuffNode.newBuilder()
                         .setParentHash(ByteString.copyFrom(zeroHash))
-                        .setCommand("")
+                        .setBlock(Block.getDefaultInstance())
                         .setViewNumber(0)
-                        .setClientId("genesis")
-                        .setTimestamp(0)
-                        .setNodeHash(ByteString.copyFrom(CryptoUtils.computeHash(zeroHash, "", 0)))
+                        .setNodeHash(ByteString.copyFrom(CryptoUtils.computeHash(zeroHash, new byte[0], 0)))
                         .build());
     }
 
@@ -36,15 +35,13 @@ public class HotStuffNode {
         return GENESIS;
     }
 
-    public HotStuffNode createLeaf(String command, int viewNumber, String clientId, long timestamp) {
+    public HotStuffNode createLeaf(Block block, int viewNumber) {
         byte[] parentHash = proto.getNodeHash().toByteArray();
-        byte[] nodeHash = CryptoUtils.computeHash(parentHash, command, viewNumber);
+        byte[] nodeHash = CryptoUtils.computeHash(parentHash, block.toByteArray(), viewNumber);
         ConsensusMessages.HotStuffNode child = ConsensusMessages.HotStuffNode.newBuilder()
                 .setParentHash(ByteString.copyFrom(parentHash))
-                .setCommand(command)
+                .setBlock(block)
                 .setViewNumber(viewNumber)
-                .setClientId(clientId)
-                .setTimestamp(timestamp)
                 .setNodeHash(ByteString.copyFrom(nodeHash))
                 .build();
         return new HotStuffNode(child);
@@ -59,9 +56,9 @@ public class HotStuffNode {
         return proto.getNodeHash().toByteArray();
     }
 
-    /** The proposed command string */
-    public String getCommand() {
-        return proto.getCommand();
+    /** The proposed block */
+    public Block getBlock() {
+        return proto.getBlock();
     }
 
     /** The view number in which this node was proposed */
@@ -69,19 +66,11 @@ public class HotStuffNode {
         return proto.getViewNumber();
     }
 
-    public String getClientId() {
-        return proto.getClientId();
-    }
-
-    public long getTimestamp() {
-        return proto.getTimestamp();
-    }
-
     @Override
     public String toString() {
         return "HotStuffNode{view=" + proto.getViewNumber()
-                + ", cmd='" + proto.getCommand() + "'"
-                + ", hash=" + CryptoUtils.bytesToHex(proto.getNodeHash().toByteArray(), 4) + "}";
+                + ", txCount=" + proto.getBlock().getTransactionsCount()
+                + ", hash=" + CryptoUtils.bytesToHex(proto.getNodeHash().toByteArray()) + "}";
     }
 
 }

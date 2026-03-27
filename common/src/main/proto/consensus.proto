@@ -3,16 +3,16 @@ syntax = "proto3";
 option java_package = "ist.group29.depchain.network";
 option java_outer_classname = "ConsensusMessages";
 
+import "client.proto";
+
 // A node in the HotStuff command tree (a block in the blockchain).
 // Each node wraps one client command and links back to its parent via a hash
 // digest, forming an append-only tree of proposals.
 message HotStuffNode {
     bytes  parent_hash = 1;  // SHA-256(parent HotStuffNode bytes)
-    string command     = 2;  // The client command (a string to append, Stage 1)
+    Block  block       = 2;  // The actual transaction block
     uint32 view_number = 3;  // View in which this node was proposed
-    bytes  node_hash   = 4;  // SHA-256(parent_hash | command | view_number)
-    string client_id   = 5;  // ID of the client that sent the request
-    int64  timestamp   = 6;  // Client's request timestamp
+    bytes  node_hash   = 4;  // SHA-256(parent_hash | block | view_number)
 }
 
 // A Quorum Certificate (QC) over the tuple <type, view_number, node_hash>.

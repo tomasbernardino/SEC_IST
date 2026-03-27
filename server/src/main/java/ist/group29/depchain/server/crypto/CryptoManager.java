@@ -14,8 +14,7 @@ import java.io.ObjectInputStream;
  * threshsig library (RSA).
  */
 public class CryptoManager {
-    private final int n = 4;
-    private final int t = 3;
+
     private final int myIndex;
 
     private final GroupKey groupKey;

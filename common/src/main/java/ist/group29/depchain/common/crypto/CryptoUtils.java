@@ -6,13 +6,11 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
-import java.security.InvalidAlgorithmParameterException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.NoSuchProviderException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
@@ -113,13 +111,22 @@ public final class CryptoUtils {
     /**
      * Compute SHA-256
      */
-    public static byte[] computeHash(byte[] parentHash, String command, int viewNumber) {
+    public static byte[] computeHash(byte[] parentHash, byte[] blockBytes, int viewNumber) {
         try {
             MessageDigest sha = MessageDigest.getInstance("SHA-256");
             sha.update(parentHash);
-            sha.update(command.getBytes(StandardCharsets.UTF_8));
+            sha.update(blockBytes);
             sha.update(ByteBuffer.allocate(4).putInt(viewNumber).array());
             return sha.digest();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
+    }
+    
+    public static byte[] sha256(byte[] data) {
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            return sha.digest(data);
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("SHA-256 not available", e);
         }
@@ -133,16 +140,24 @@ public final class CryptoUtils {
         return ByteBuffer.allocate(Long.BYTES).putLong(v).array();
     }
 
-    public static String bytesToHex(byte[] b, int maxBytes) {
+    public static String bytesToHex(byte[] b) {
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < Math.min(b.length, maxBytes); i++) {
-            sb.append(String.format("%02x", b[i]));
-        }
-        if (b.length > maxBytes)
-            sb.append("...");
+        for (byte value : b)
+            sb.append(String.format("%02x", value));
         return sb.toString();
     }
+    
 
+    public static byte[] hexToBytes(String hex) {
+        int len = hex.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
+                    + Character.digit(hex.charAt(i + 1), 16));
+        }
+        return data;
+    }
+    
     // ────────────────────────────────────────────────────────────
     // ECDSA (secp256k1) — Blockchain transaction signing
     // ────────────────────────────────────────────────────────────

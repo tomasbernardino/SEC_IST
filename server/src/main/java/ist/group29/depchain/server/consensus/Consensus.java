@@ -2,8 +2,8 @@ package ist.group29.depchain.server.consensus;
 
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
-import ist.group29.depchain.common.network.MessageListener;
 import ist.group29.depchain.common.network.LinkManager;
+import ist.group29.depchain.common.network.EnvelopeFactory;
 import ist.group29.depchain.network.ConsensusMessages;
 import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
 import ist.group29.depchain.network.ConsensusMessages.VoteMessage;
@@ -14,12 +14,9 @@ import ist.group29.depchain.network.ConsensusMessages.CommitMessage;
 import ist.group29.depchain.network.ConsensusMessages.DecideMessage;
 import ist.group29.depchain.network.ConsensusMessages.SyncRequest;
 import ist.group29.depchain.network.ConsensusMessages.SyncResponse;
-import ist.group29.depchain.client.ClientMessages.ClientRequest;
-import ist.group29.depchain.client.ClientMessages.ClientResponse;
+import ist.group29.depchain.client.ClientMessages.Block;
 import ist.group29.depchain.server.crypto.CryptoManager;
 import ist.group29.depchain.common.crypto.CryptoUtils;
-import java.security.PublicKey;
-
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.Level;
@@ -28,15 +25,15 @@ import java.util.logging.Logger;
 /**
  * Basic HotStuff consensus engine - Algorithm 2 of the paper.
  *
- * Implements MessageListener so it plugs directly into the
- * LinkManager receive callback without any coupling between the
- * network layer and the consensus protocol.
+ * Messages arrive via MessageRouter which dispatches ConsensusMessages here
+ * and Transactions to the Service layer.
  */
-public class Consensus implements MessageListener {
+public class Consensus {
 
     private static final Logger LOG = Logger.getLogger(Consensus.class.getName());
 
     private static final long INITIAL_TIMEOUT_MS = 4_000;
+    private static final long PROPOSAL_RETRY_MS = 1_000;
 
     private final String selfId;
     private final List<String> sortedNodeIds;
@@ -64,20 +61,12 @@ public class Consensus implements MessageListener {
 
     private volatile HotStuffNode currentProposal = null;
 
-    // Set when NEW-VIEW quorum is reached but no client request is available yet.
-    // Allows triggerProposal() to use the correct highQC when a request arrives
-    // later.
-    private QuorumCertificate pendingHighQC = null;
-
-    // Buffer for verified client requests waiting to be proposed
-    private final Queue<ClientRequestEntry> clientRequestBuffer = new ConcurrentLinkedQueue<>();
-
-    private record ClientRequestEntry(String clientId, ClientRequest request) {
-    }
+    private QuorumCertificate highQC = null;
 
     private final ScheduledExecutorService pacemaker;
 
     private ScheduledFuture<?> viewTimer = null;
+    private ScheduledFuture<?> blockProposalTimer = null;
     private long timeoutMs = INITIAL_TIMEOUT_MS;
 
     private int lastVotedPrepareView = 0;
@@ -90,6 +79,7 @@ public class Consensus implements MessageListener {
 
     private volatile PendingPrepare pendingPrepare = null;
 
+    //TODO also add TxManager
     public Consensus(String selfId, List<String> allNodeIds,
             LinkManager linkManager, DecideListener decideListener, String keysDir) {
         this(selfId, allNodeIds, linkManager, decideListener, createDefaultCrypto(selfId, keysDir),
@@ -152,85 +142,27 @@ public class Consensus implements MessageListener {
     /**
      * Start consensus for view 1.
      */
-    public synchronized void start(String initialCommand) {
+    public synchronized void start() {
         LOG.info("[Consensus] Starting view " + curView + " - leader is " + leader(curView));
         sendNewView(curView);
         resetTimer();
     }
 
     /**
-     * Called by LinkManager when an authenticated, deduplicated payload
-     * arrives.
+     * Called by MessageRouter when a ConsensusMessage arrives (already parsed).
      */
-    @Override
-    public void onMessage(String senderId, byte[] payload) {
-        try {
-            ConsensusMessage msg = ConsensusMessage.parseFrom(payload);
-            int msgView = msg.getViewNumber();
-
-            switch (msg.getTypeCase()) {
-                case NEW_VIEW -> onNewView(senderId, msg.getNewView(), msgView);
-                case PREPARE -> onPrepare(senderId, msg.getPrepare(), msgView);
-                case VOTE -> onVote(senderId, msg.getVote(), msgView);
-                case PRE_COMMIT -> onPreCommit(senderId, msg.getPreCommit(), msgView);
-                case COMMIT -> onCommit(senderId, msg.getCommit(), msgView);
-                case DECIDE -> onDecide(senderId, msg.getDecide(), msgView);
-                case SYNC_REQUEST -> onSyncRequest(senderId, msg.getSyncRequest());
-                case SYNC_RESPONSE -> onSyncResponse(senderId, msg.getSyncResponse());
-                case TYPE_NOT_SET -> {
-                    // ClientRequest doesn't contain any ConsensusMessage-specific tags
-                    try {
-                        ClientRequest clientReq = ClientRequest.parseFrom(payload);
-                        if (!clientReq.getValue().isEmpty()) {
-                            onClientRequest(senderId, clientReq);
-                        } else {
-                            LOG.fine("[Consensus] Ignoring unidentified message from " + senderId);
-                        }
-                    } catch (InvalidProtocolBufferException e2) {
-                        LOG.fine("[Consensus] Unrecognised message from " + senderId);
-                    }
-                }
-                default -> LOG.warning("[Consensus] Unknown message type from " + senderId);
-            }
-        } catch (InvalidProtocolBufferException e) {
-            // parse failure, try ClientRequest as last resort
-            try {
-                ClientRequest clientReq = ClientRequest.parseFrom(payload);
-                onClientRequest(senderId, clientReq);
-            } catch (InvalidProtocolBufferException e2) {
-                LOG.log(Level.WARNING, "[Consensus] Failed to parse message from " + senderId, e);
-            }
-        }
-    }
-
-    private synchronized void onClientRequest(String clientId, ClientRequest req) {
-        LOG.info("[Consensus] Received ClientRequest from " + clientId);
-
-        // Verify Signature
-        try {
-            PublicKey clientPubKey = linkManager.getPeerPublicKey(clientId);
-            if (clientPubKey == null) {
-                LOG.warning("[Consensus] Ignoring request from unknown client: " + clientId);
-                return;
-            }
-
-            boolean valid = CryptoUtils.verify(clientPubKey, req.getSignature().toByteArray(),
-                    CryptoUtils.toBytes(req.getOp().name()),
-                    CryptoUtils.toBytes(req.getValue()),
-                    CryptoUtils.toBytes(req.getTimestamp()));
-
-            if (!valid) {
-                LOG.warning("[Consensus] Invalid signature on request from client: " + clientId);
-                return;
-            }
-
-            clientRequestBuffer.add(new ClientRequestEntry(clientId, req));
-            LOG.info("[Consensus] Buffered request from " + clientId + ". Buffer size: " + clientRequestBuffer.size());
-
-            triggerProposal();
-
-        } catch (Exception e) {
-            LOG.log(Level.WARNING, "[Consensus] Error verifying client request", e);
+    public void onMessage(String senderId, ConsensusMessage msg) {
+        int msgView = msg.getViewNumber();
+        switch (msg.getTypeCase()) {
+            case NEW_VIEW -> onNewView(senderId, msg.getNewView(), msgView);
+            case PREPARE -> onPrepare(senderId, msg.getPrepare(), msgView);
+            case VOTE -> onVote(senderId, msg.getVote(), msgView);
+            case PRE_COMMIT -> onPreCommit(senderId, msg.getPreCommit(), msgView);
+            case COMMIT -> onCommit(senderId, msg.getCommit(), msgView);
+            case DECIDE -> onDecide(senderId, msg.getDecide(), msgView);
+            case SYNC_REQUEST -> onSyncRequest(senderId, msg.getSyncRequest());
+            case SYNC_RESPONSE -> onSyncResponse(senderId, msg.getSyncResponse());
+            default -> LOG.warning("[Consensus] Unknown message type from " + senderId);
         }
     }
 
@@ -255,87 +187,44 @@ public class Consensus implements MessageListener {
         LOG.info("[Consensus] Reached NEW-VIEW quorum for view " + view + "! Proposing...");
 
         // Extract the QC with the highest view number from all NEW-VIEW messages
-        QuorumCertificate highQC = QuorumCertificate.genesisQC(); // Initialize with genesisQC
+        highQC = QuorumCertificate.genesisQC(); // Initialize with genesisQC
         for (NewViewMessage nv : newViewMessages.values()) {
             QuorumCertificate qc = new QuorumCertificate(nv.getJustify());
             if (qc.getViewNumber() > highQC.getViewNumber()) {
                 highQC = qc;
             }
         }
-        newViewAccumulator.remove(view); // Clear messages for this view after processing
 
-        // Only propose if there is a real client request pending.
-        ClientRequestEntry entry = clientRequestBuffer.poll();
-        if (entry == null) {
-            LOG.fine("[Consensus] Leader has no pending request in view " + view + " - saving highQC and waiting...");
-            pendingHighQC = highQC; // preserve highQC for triggerProposal to use when a request arrives later
-            return;
-        }
-
-        String command = entry.request().getValue();
-        String clientId = entry.clientId();
-        long timestamp = entry.request().getTimestamp();
-        LOG.info("[Consensus] Proposing client request: " + command + " from " + clientId);
-
-        HotStuffNode parentNode = new HotStuffNode(
-                ConsensusMessages.HotStuffNode.newBuilder()
-                        .setNodeHash(ByteString.copyFrom(highQC.getNodeHash()))
-                        .build());
-        HotStuffNode proposed = parentNode.createLeaf(command, view, clientId, timestamp);
-
-        this.currentProposal = proposed;
-        storeBlock(proposed);
-
-        PrepareMessage prepare = PrepareMessage.newBuilder()
-                .setNode(proposed.getProto())
-                .setJustify(highQC.getProto())
-                .build();
-
-        linkManager.broadcast(ConsensusMessage.newBuilder()
-                .setViewNumber(view)
-                .setPrepare(prepare)
-                .build().toByteArray());
-
-        onPrepare(selfId, prepare, view);
+        triggerProposal();
     }
 
     /**
-     * Trigger a proposal when a new request arrives from a client.
+     * Trigger a proposal by asking the Service to build a block.
+     * Called on NEW-VIEW quorum and by the proposal retry timer.
      */
     public synchronized void triggerProposal() {
         if (!isLeader(curView))
             return;
         if (currentProposal != null)
             return;
+        Map<String, NewViewMessage> newViewMessages = newViewAccumulator.get(curView);
+        // Only build if there is a quorum of NEW-VIEW messages and an already defined highQC
+        if (newViewMessages == null ||newViewMessages.size() < quorum || highQC == null)
+            return;
 
-        QuorumCertificate highQC = pendingHighQC;
-        if (highQC == null) {
-            // Quorum not reached yet
-            Map<String, NewViewMessage> received = newViewAccumulator.get(curView);
-            if (received == null || received.size() < quorum)
-                return;
-            highQC = QuorumCertificate.genesisQC();
-            for (NewViewMessage nv : received.values()) {
-                QuorumCertificate qc = new QuorumCertificate(nv.getJustify());
-                if (qc.getViewNumber() > highQC.getViewNumber())
-                    highQC = qc;
-            }
+        //TODO TxManager instead
+        Block block = decideListener.buildBlock();
+        if (block == null || block.getTransactionsCount() == 0) {
+            scheduleRetry();
+            return;
         }
-
-        ClientRequestEntry entry = clientRequestBuffer.poll();
-        if (entry == null)
-            return; // No pending requests
-
-        String command = entry.request().getValue();
-        String clientId = entry.clientId();
-        long timestamp = entry.request().getTimestamp();
 
         // Create new proposal
         HotStuffNode parentNode = new HotStuffNode(
                 ConsensusMessages.HotStuffNode.newBuilder()
                         .setNodeHash(ByteString.copyFrom(highQC.getNodeHash()))
                         .build());
-        currentProposal = parentNode.createLeaf(command, curView, clientId, timestamp);
+        currentProposal = parentNode.createLeaf(block, curView);
 
         storeBlock(currentProposal);
         LOG.info("[Consensus] Leader view triggered proactive proposal for view " + curView + ": " + currentProposal);
@@ -345,12 +234,15 @@ public class Consensus implements MessageListener {
                 .setJustify(highQC.getProto())
                 .build();
 
-        linkManager.broadcast(ConsensusMessage.newBuilder()
+        ConsensusMessage prepareMsg = ConsensusMessage.newBuilder()
                 .setViewNumber(curView)
                 .setPrepare(prepare)
-                .build().toByteArray());
-
+                .build();
+        linkManager.broadcast(EnvelopeFactory.wrap(prepareMsg));
+        
+        cancelBlockProposalTimer(); // Proposal is out, no need for retry
         onPrepare(selfId, prepare, curView);
+        highQC = null;
     }
 
     /**
@@ -382,10 +274,16 @@ public class Consensus implements MessageListener {
         if (!blockStore.containsKey(ByteString.copyFrom(justify.getNodeHash()))
                 && !Arrays.equals(justify.getNodeHash(), HotStuffNode.genesis().getNodeHash())) {
             LOG.info("[Consensus] Missing blocks — requesting sync from " + senderId
-                    + " for hash " + ist.group29.depchain.common.crypto.CryptoUtils.bytesToHex(
-                            justify.getNodeHash(), 4));
+                    + " for hash " + CryptoUtils.bytesToHex(
+                            justify.getNodeHash()));
             requestSync(senderId, justify.getNodeHash());
             pendingPrepare = new PendingPrepare(senderId, msg, view);
+            return;
+        }
+        // TODO TxManager instead of service
+
+        if (!decideListener.validateBlock(proposedNode.getBlock())) {
+            LOG.warning("[Consensus] PREPARE rejected by Service validation in view " + view);
             return;
         }
 
@@ -450,7 +348,7 @@ public class Consensus implements MessageListener {
                             .setPreCommit(PreCommitMessage.newBuilder()
                                     .setJustify(qc.getProto()).build())
                             .build();
-                    linkManager.broadcast(preCommit.toByteArray());
+                    linkManager.broadcast(EnvelopeFactory.wrap(preCommit));
                     onPreCommit(selfId, preCommit.getPreCommit(), view);
                 }
                 case QuorumCertificate.PRE_COMMIT -> {
@@ -459,7 +357,7 @@ public class Consensus implements MessageListener {
                             .setCommit(CommitMessage.newBuilder()
                                     .setJustify(qc.getProto()).build())
                             .build();
-                    linkManager.broadcast(commit.toByteArray());
+                    linkManager.broadcast(EnvelopeFactory.wrap(commit));
                     onCommit(selfId, commit.getCommit(), view);
                 }
                 case QuorumCertificate.COMMIT -> {
@@ -468,7 +366,7 @@ public class Consensus implements MessageListener {
                             .setDecide(DecideMessage.newBuilder()
                                     .setJustify(qc.getProto()).build())
                             .build();
-                    linkManager.broadcast(decide.toByteArray());
+                    linkManager.broadcast(EnvelopeFactory.wrap(decide));
                     onDecide(selfId, decide.getDecide(), view);
                 }
             }
@@ -554,7 +452,7 @@ public class Consensus implements MessageListener {
             return;
         }
 
-        LOG.info("[Consensus] DECIDED view " + view + " - command: " + currentProposal.getCommand());
+        LOG.info("[Consensus] DECIDED view " + view + " - txs: " + currentProposal.getBlock().getTransactionsCount());
         cancelTimer();
 
         timeoutMs = INITIAL_TIMEOUT_MS;
@@ -610,7 +508,7 @@ public class Consensus implements MessageListener {
     private void advanceView() {
         curView++;
         currentProposal = null;
-        pendingHighQC = null; // Reset so next view's leader computes a fresh highQC
+        highQC = null;
         LOG.info("[Consensus] Advancing to view " + curView + " - leader: " + leader(curView));
 
         // Clean up old accumulator entries to prevent unbounded memory growth.
@@ -626,7 +524,7 @@ public class Consensus implements MessageListener {
 
     private synchronized void onTimeout() {
         LOG.warning("[Consensus] Timeout in view " + curView + " - triggering view-change");
-        timeoutMs *= 2;
+        timeoutMs = Math.min(timeoutMs * 2, 60_000);
         advanceView();
     }
 
@@ -638,6 +536,18 @@ public class Consensus implements MessageListener {
     private void cancelTimer() {
         if (viewTimer != null) {
             viewTimer.cancel(false);
+        }
+        cancelBlockProposalTimer();
+    }
+
+    private void scheduleRetry() {
+        cancelBlockProposalTimer();
+        blockProposalTimer = pacemaker.schedule(this::triggerProposal, PROPOSAL_RETRY_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void cancelBlockProposalTimer() {
+        if (blockProposalTimer != null) {
+            blockProposalTimer.cancel(false);
         }
     }
 
@@ -662,7 +572,7 @@ public class Consensus implements MessageListener {
         if (nextLeader.equals(selfId)) {
             onNewView(selfId, msg.getNewView(), targetView);
         } else {
-            linkManager.send(nextLeader, msg.toByteArray());
+            linkManager.send(nextLeader, EnvelopeFactory.wrap(msg));
         }
     }
 
@@ -670,7 +580,6 @@ public class Consensus implements MessageListener {
         LOG.info("[Consensus] Node " + selfId + " casting vote for phase=" + phase + " view=" + view);
 
         try {
-
             QuorumCertificate dummyQc = QuorumCertificate.create(phase, view, nodeHash, null);
             byte[] signatureShare = cryptoManager.computeSignatureShare(dummyQc.getMessageToSign());
 
@@ -689,7 +598,7 @@ public class Consensus implements MessageListener {
             if (currentLeader.equals(selfId)) {
                 onVote(selfId, msg.getVote(), view);
             } else {
-                linkManager.send(currentLeader, msg.toByteArray());
+                linkManager.send(currentLeader, EnvelopeFactory.wrap(msg));
             }
         } catch (Exception e) {
             LOG.log(Level.SEVERE, "Failed to send vote", e);
@@ -707,7 +616,7 @@ public class Consensus implements MessageListener {
         int maxDepth = 1000;
         while (current != null && maxDepth-- > 0
                 && !ByteString.copyFrom(current.getNodeHash()).equals(lastExecutedNodeHash)) {
-            if (!current.getCommand().isEmpty()) {
+            if (current.getBlock().getTransactionsCount() > 0) {
                 toExecute.add(current);
             }
             current = blockStore.get(current.getProto().getParentHash());
@@ -715,23 +624,10 @@ public class Consensus implements MessageListener {
 
         Collections.reverse(toExecute);
         for (HotStuffNode node : toExecute) {
-            LOG.info(
-                    "[Consensus] DECIDE View " + decidedNode.getViewNumber() + " finalized node: " + node.getCommand());
-
-            // Execute the upcall to Service (application layer)
-            decideListener.onDecide(node.getCommand(), node.getViewNumber(), node.getClientId(), node.getTimestamp());
-
-            // Step 6: Send response back to the client
-            if (!node.getClientId().equals("system") && !node.getClientId().equals("genesis")) {
-                ClientResponse resp = ClientResponse.newBuilder()
-                        .setStatus("SUCCESS")
-                        .setValue(node.getCommand())
-                        .setTimestamp(node.getTimestamp())
-                        .build();
-
-                LOG.info("[Consensus] Sending ClientResponse to " + node.getClientId());
-                linkManager.send(node.getClientId(), resp.toByteArray());
-            }
+            LOG.info("[Consensus] DECIDE View " + decidedNode.getViewNumber() + " finalized block with "
+                    + node.getBlock().getTransactionsCount() + " txs");
+            // Execute the upcall to Service (application layer) FIXME: the reply of the transaction should be sent in the decider after execution
+            decideListener.onDecide(node.getBlock(), node.getViewNumber());
         }
         lastExecutedNodeHash = ByteString.copyFrom(decidedNode.getNodeHash());
         lastDecidedView = decidedNode.getViewNumber();
@@ -755,7 +651,7 @@ public class Consensus implements MessageListener {
                         .setNodeHash(ByteString.copyFrom(nodeHash))
                         .build())
                 .build();
-        linkManager.send(peerId, msg.toByteArray());
+        linkManager.send(peerId, EnvelopeFactory.wrap(msg));
     }
 
     /**
@@ -783,7 +679,7 @@ public class Consensus implements MessageListener {
                         .addAllNodes(nodes)
                         .build())
                 .build();
-        linkManager.send(senderId, resp.toByteArray());
+        linkManager.send(senderId, EnvelopeFactory.wrap(resp));
         LOG.info("[Consensus] Sent " + nodes.size() + " blocks to " + senderId + " in sync response");
     }
 

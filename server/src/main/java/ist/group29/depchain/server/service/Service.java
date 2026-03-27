@@ -227,7 +227,6 @@ public class Service implements DecideListener {
             LOG.warning("[Service] Transaction rejected: error during signature recovery: " + e.getMessage());
             return false;
         }
-
-        return mempool.addTransaction(tx);
+        return true;
     }
 }

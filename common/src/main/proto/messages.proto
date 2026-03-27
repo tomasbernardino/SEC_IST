@@ -3,6 +3,9 @@ syntax = "proto3";
 option java_package = "ist.group29.depchain.network";
 option java_outer_classname = "NetworkMessages";
 
+import "consensus.proto";
+import "client.proto";
+
 
 message Message {
     string sender_id    = 1;  // Process ID of the sender
@@ -37,4 +40,13 @@ message DataMessage {
 // Acknowledgment with HMAC integrity.
 message AckMessage {
     bytes mac = 1;  
+}
+
+// Application-level envelope for multiplexing message types over the wire.
+message Envelope {
+    oneof payload {
+        ConsensusMessage     consensus            = 1;
+        Transaction          transaction           = 2;
+        TransactionResponse  transaction_response  = 3;
+    }
 }
