@@ -3,27 +3,28 @@ package ist.group29.depchain.client;
 import ist.group29.depchain.common.network.LinkManager;
 import ist.group29.depchain.common.network.MessageListener;
 import ist.group29.depchain.common.network.ProcessInfo;
-// import ist.group29.depchain.client.ClientMessages.ClientRequest;
-// import ist.group29.depchain.client.ClientMessages.ClientResponse;
+import ist.group29.depchain.common.network.EnvelopeFactory;
+import ist.group29.depchain.network.NetworkMessages.Envelope;
 import ist.group29.depchain.client.ClientMessages.Transaction;
 import ist.group29.depchain.client.ClientMessages.TransactionResponse;
 import ist.group29.depchain.common.crypto.ClientSignature;
 import ist.group29.depchain.common.crypto.CryptoUtils;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.PublicKey;
-import java.util.Base64;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Logger;
 import org.web3j.crypto.ECKeyPair;
 
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 
 public class ClientLibrary implements MessageListener {
     private static final Logger LOG = Logger.getLogger(ClientLibrary.class.getName());
@@ -65,7 +66,13 @@ public class ClientLibrary implements MessageListener {
     }
 
 
+    private static final long DEFAULT_TIMEOUT_SECONDS = 30;
+
     public CompletableFuture<TransactionResponse> submitTransaction(String to, long value, byte[] data) {
+        return submitTransaction(to, value, data, DEFAULT_TIMEOUT_SECONDS);
+    }
+
+    public CompletableFuture<TransactionResponse> submitTransaction(String to, long value, byte[] data, long timeoutSeconds) {
         long currentNonce = nonce.getAndIncrement();
 
         Transaction.Builder txBuilder = Transaction.newBuilder()
@@ -93,29 +100,45 @@ public class ClientLibrary implements MessageListener {
         byte[] txHash = CryptoUtils.keccakHash(txBytes);
 
         CompletableFuture<TransactionResponse> future = new CompletableFuture<>();
-        String requestKey = this.myAddress + ":" + currentNonce; // Unique key for this transaction request
-        
+        String requestKey = this.myAddress + ":" + currentNonce;
+        ByteBuffer txHashKey = ByteBuffer.wrap(txHash);
+
         // track transaction completion
         futures.put(requestKey, future); 
         pendingRequests.put(requestKey, ConcurrentHashMap.newKeySet());
-        txHashToReqKey.put(ByteBuffer.wrap(txHash), requestKey);
+        txHashToReqKey.put(txHashKey, requestKey);
 
-        // Broadcast the signed transaction to all nodes (base64-encoded for transport)
-        String b64Tx = Base64.getEncoder().encodeToString(txBytes);
-        linkManager.broadcast(b64Tx.getBytes(StandardCharsets.UTF_8));
+        // Broadcast the signed transaction wrapped in an Envelope
+        linkManager.broadcast(EnvelopeFactory.wrap(signedTx));
 
-        return future;
+        // Wrap with timeout + cleanup on expiry
+        return future
+                .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .whenComplete((resp, ex) -> {
+                    if (ex instanceof TimeoutException) {
+                        futures.remove(requestKey);
+                        pendingRequests.remove(requestKey);
+                        txHashToReqKey.remove(txHashKey);
+                        LOG.info("[Client] Transaction timed out, cleaned up: " + requestKey);
+                    }
+                });
     }
 
     @Override
     public void onMessage(String senderId, byte[] payload) {
         try {
-            // Parse response
-            TransactionResponse response = TransactionResponse.parseFrom(payload);
+            // Unwrap the Envelope to extract the TransactionResponse
+            Envelope env = Envelope.parseFrom(payload);
+            if (env.getPayloadCase() != Envelope.PayloadCase.TRANSACTION_RESPONSE) {
+                LOG.warning("[Client] Unexpected envelope payload from " + senderId + ": " + env.getPayloadCase());
+                return;
+            }
+            TransactionResponse response = env.getTransactionResponse();
+
             ByteBuffer hash = ByteBuffer.wrap(response.getTransactionHash().toByteArray());
             String requestKey = txHashToReqKey.get(hash);
             if (requestKey == null) {
-                LOG.warning("[Client]Received response for unknown transaction hash: " + hash);
+                LOG.warning("[Client] Received response for unknown transaction hash: " + hash);
                 return;
             }
 
@@ -136,8 +159,10 @@ public class ClientLibrary implements MessageListener {
                     }
                 }
             }
+        } catch (InvalidProtocolBufferException e) {
+            LOG.warning("[Client] Malformed envelope from " + senderId + ": " + e.getMessage());
         } catch (Exception e) {
-            LOG.warning("Failed to process message from " + senderId + ": " + e.getMessage());
+            LOG.warning("[Client] Failed to process message from " + senderId + ": " + e.getMessage());
         }
     }
 

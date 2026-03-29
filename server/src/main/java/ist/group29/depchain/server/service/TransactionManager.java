@@ -1,7 +1,6 @@
 package ist.group29.depchain.server.service;
 
 import java.math.BigInteger;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
@@ -208,16 +207,19 @@ public class TransactionManager {
                     tx.getSigR().toByteArray(),
                     tx.getSigS().toByteArray());
 
-            boolean sigValid = CryptoUtils.ecVerify(
-                    signature,
-                    tx.getFrom(),
-                    tx.getFrom().getBytes(StandardCharsets.UTF_8),
-                    tx.getTo().getBytes(StandardCharsets.UTF_8),
-                    CryptoUtils.toBytes(tx.getValue()),
-                    CryptoUtils.toBytes(tx.getNonce()),
-                    CryptoUtils.toBytes(tx.getGasPrice()),
-                    CryptoUtils.toBytes(tx.getGasLimit()),
-                    tx.getData().toByteArray());
+            // Reconstruct unsigned transaction (without signature fields) —
+            // must match the bytes the client signed before setting sig_v/r/s.
+            Transaction unsignedTx = Transaction.newBuilder()
+                    .setFrom(tx.getFrom())
+                    .setTo(tx.getTo())
+                    .setValue(tx.getValue())
+                    .setNonce(tx.getNonce())
+                    .setGasPrice(tx.getGasPrice())
+                    .setGasLimit(tx.getGasLimit())
+                    .setData(tx.getData())
+                    .build();
+
+            boolean sigValid = CryptoUtils.ecVerify(signature, tx.getFrom(), unsignedTx.toByteArray());
 
             if (!sigValid) {
                 LOG.warning("[TransactionManager] Transaction rejected: invalid ECDSA signature from sender " + tx.getFrom());
@@ -234,7 +236,7 @@ public class TransactionManager {
     private TransactionResponse buildResponse(Transaction tx, TransactionStatus status, String error) {
         return TransactionResponse.newBuilder()
                 .setStatus(status)
-                .setTransactionHash(ByteString.copyFrom(CryptoUtils.sha256(tx.toByteArray())))
+                .setTransactionHash(ByteString.copyFrom(CryptoUtils.keccakHash(tx.toByteArray())))
                 .setErrorMessage(error)
                 .build();
     }

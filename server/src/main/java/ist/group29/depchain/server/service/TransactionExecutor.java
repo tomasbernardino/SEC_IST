@@ -63,8 +63,11 @@ public class TransactionExecutor {
 
         LOG.info("[Executor] Processing tx from " + tx.getFrom() + " to " + tx.getTo() + " nonce=" + tx.getNonce());
 
+        // Normalize addresses (strip 0x prefix, lowercase) to match state keys
+        String fromAddr = tx.getFrom().replace("0x", "").toLowerCase();
+
         // Pre-execution validation
-        BlockchainAccount senderAcc = state.getAccount(tx.getFrom());
+        BlockchainAccount senderAcc = state.getAccount(fromAddr);
         if (!(senderAcc instanceof EOA)) {
             return errorResponse(tx, TransactionStatus.INVALID_SIGNATURE, "Sender must be an EOA.");
         }
@@ -111,7 +114,8 @@ public class TransactionExecutor {
 
         chargeGas(sender, gasUsed, tx.getGasPrice());
 
-        BlockchainAccount receiverAcc = state.getOrCreateAccount(tx.getTo());
+        String toAddr = tx.getTo().replace("0x", "").toLowerCase();
+        BlockchainAccount receiverAcc = state.getOrCreateAccount(toAddr);
         sender.debit(BigInteger.valueOf(tx.getValue()));
         receiverAcc.credit(BigInteger.valueOf(tx.getValue()));
 
@@ -240,7 +244,7 @@ public class TransactionExecutor {
     private TransactionResponse successResponse(Transaction tx, TransactionStatus status, long gasUsed, long blockNum,
             Bytes output,
             String msg) {
-        byte[] txHash = CryptoUtils.sha256(tx.toByteArray());
+        byte[] txHash = CryptoUtils.keccakHash(tx.toByteArray());
         return TransactionResponse.newBuilder()
                 .setStatus(status)
                 .setTransactionHash(ByteString.copyFrom(txHash))
@@ -252,7 +256,7 @@ public class TransactionExecutor {
     }
 
     private TransactionResponse errorResponse(Transaction tx, TransactionStatus status, String msg) {
-        byte[] txHash = CryptoUtils.sha256(tx.toByteArray());
+        byte[] txHash = CryptoUtils.keccakHash(tx.toByteArray());
         return TransactionResponse.newBuilder()
                 .setStatus(status)
                 .setTransactionHash(ByteString.copyFrom(txHash))

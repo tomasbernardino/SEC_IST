@@ -77,7 +77,7 @@ public class Mempool {
     }
 
     public String getHash(Transaction tx) {
-        return CryptoUtils.bytesToHex(CryptoUtils.sha256(tx.toByteArray()));
+        return CryptoUtils.bytesToHex(CryptoUtils.keccakHash(tx.toByteArray()));
     }
 
     // FIXME: Not used
