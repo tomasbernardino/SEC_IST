@@ -38,16 +38,17 @@ public class SystemSetupTool {
     public static void main(String[] args) throws Exception {
         if (args.length < 6) {
             System.err.println(
-                    "Usage: SystemSetupTool <nrNodes> <nrClients> <keysDir> <hostsConfig> <outputDir> <password>");
+                    "Usage: SystemSetupTool <nrNodes> <nrClients> <keysDir> <storageDir> <hostsConfig> <outputDir> <password>");
             System.exit(1);
         }
 
         int nrNodes = Integer.parseInt(args[0]);
         int nrClients = Integer.parseInt(args[1]);
         Path keysDir = Path.of(args[2]);
-        Path hostsConfig = Path.of(args[3]);
-        Path outputDir = Path.of(args[4]);
-        String password = args[5];
+        Path storageDir = Path.of(args[3]);
+        Path hostsConfig = Path.of(args[4]);
+        Path outputDir = Path.of(args[5]);
+        String password = args[6];
 
         // Clean and recreate keys directory
         if (Files.exists(keysDir)) {
@@ -118,12 +119,23 @@ public class SystemSetupTool {
                 writer.println(entry.getKey() + " 0x" + entry.getValue());
             }
         }
-
+        // Clean and recreate storage directory
+        if (Files.exists(storageDir)) {
+            Files.walk(storageDir)
+                    .sorted(java.util.Comparator.reverseOrder())
+                    .forEach(p -> {
+                        try {
+                            Files.delete(p);
+                        } catch (IOException e) {
+                            /* ignore */ }
+                    });
+        }
+        Files.createDirectories(storageDir);
         // ═══════════════════════════════════════════════════════
         // Step 5: Generate genesis.json
         // ═══════════════════════════════════════════════════════
         System.out.println("=== Generating genesis.json ===");
-        generateGenesis(clientAddresses, outputDir.resolve("genesis.json"));
+        generateGenesis(clientAddresses, storageDir.resolve("genesis.json"));
 
         System.out.println("\n=== System setup complete! ===");
         System.out.println("Keys directory: " + keysDir);
@@ -194,7 +206,7 @@ public class SystemSetupTool {
 
         // Add EOA accounts for each client
         for (Map.Entry<String, String> entry : clientAddresses.entrySet()) {
-            GenesisAccount account = new GenesisAccount();
+            GenesisEOA account = new GenesisEOA();
             account.balance = INITIAL_BALANCE;
             genesis.state.put(entry.getValue(), account);
         }
@@ -271,6 +283,7 @@ public class SystemSetupTool {
 
     // Genesis data classes
     static class GenesisBlock {
+        long block_number = 0;
         String block_hash = "";
         String previous_block_hash = null;
         List<Object> transactions = List.of();
@@ -278,8 +291,11 @@ public class SystemSetupTool {
     }
 
     static class GenesisAccount {
-        int nonce = 0;
         BigInteger balance = BigInteger.ZERO;
+    }
+
+    static class GenesisEOA extends GenesisAccount {
+        int nonce = 0;
     }
 
     static class GenesisContractAccount extends GenesisAccount {

@@ -3,10 +3,11 @@ package ist.group29.depchain.server.service;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.Map;
+import com.google.protobuf.ByteString;
 
 import ist.group29.depchain.client.ClientMessages.Block;
 import ist.group29.depchain.client.ClientMessages.Transaction;
@@ -18,7 +19,6 @@ import ist.group29.depchain.common.network.LinkManager;
 import ist.group29.depchain.network.NetworkMessages.Envelope;
 import ist.group29.depchain.server.service.account.BlockchainAccount;
 import ist.group29.depchain.server.service.account.EOA;
-import com.google.protobuf.ByteString;
 
 public class TransactionManager {
 
@@ -28,6 +28,7 @@ public class TransactionManager {
     private final BlockchainState state;
     private final Mempool mempool = new Mempool();
     private final LinkManager linkManager;
+    private final TransactionExecutor executor;
 
     // Mapping from Transaction Hash (hex) to the senderId (Process ID) of the client
     private final Map<String, String> txHashToSenderId = new ConcurrentHashMap<>();
@@ -35,6 +36,7 @@ public class TransactionManager {
     public TransactionManager(BlockchainState state, LinkManager linkManager) {
         this.state = state;
         this.linkManager = linkManager;
+        this.executor = new TransactionExecutor(state);
     }
 
     public Block buildBlock() {
@@ -99,7 +101,7 @@ public class TransactionManager {
         byte[] contentHash = CryptoUtils.sha256(builder.build().toByteArray());
         builder.setBlockHash(CryptoUtils.bytesToHex(contentHash));
         
-        LOG.info("[TransactionManager] Proposed Block #" + blockNumber + " with " + candidateTxs.size() + " transactions.");
+        LOG.info("[TransactionManager] Finished building Block #" + blockNumber + " with " + candidateTxs.size() + " transactions.");
         return builder.build();
     }
 
@@ -115,30 +117,33 @@ public class TransactionManager {
         return true;
     }
 
+    public List<TransactionResponse> executeBlock(Block block, long blockNumber) {
+        return executor.executeBlock(block, blockNumber);
+    }
+
     /**
      * Entry point for new client transactions. Sets them to the mempool after validation.
      * If the transaction is rejected, sends the response to the client that sent it.
      */
-    public boolean addPendingTx(String senderId, Transaction tx) {
+    public void addPendingTx(String senderId, Transaction tx) {
         TransactionResponse rejection = validateIncomingTx(tx);
         if (rejection != null) {
             Envelope responseEnv = Envelope.newBuilder()
                     .setTransactionResponse(rejection)
                     .build();
             linkManager.send(senderId, responseEnv.toByteArray());
-            return false;
+            return;
         }
 
         String hash = mempool.getHash(tx);
         if (mempool.addTransaction(tx)) {
+            LOG.info("[TransactionManager] Added transaction from " + tx.getFrom() + " (nonce=" + tx.getNonce() + ") to mempool");
             txHashToSenderId.put(hash, senderId);
-            return true;
         } else {
             Envelope responseEnv = Envelope.newBuilder()
                     .setTransactionResponse(buildResponse(tx, TransactionStatus.FAILURE, "Duplicate transaction hash " + hash))
                     .build();
             linkManager.send(senderId, responseEnv.toByteArray());
-            return false;
         }
     }
 
@@ -166,6 +171,20 @@ public class TransactionManager {
             String msg = "gas_limit (" + tx.getGasLimit() + ") < intrinsic_gas (" + intrinsicGas + ")";
             LOG.warning("[TransactionManager] Transaction rejected: " + msg);
             return buildResponse(tx, TransactionStatus.OUT_OF_GAS, msg);
+        }
+
+        // Gas Price Check
+        if (tx.getGasPrice() <= 0) {
+            String msg = "gas price must be positive (got " + tx.getGasPrice() + ")";
+            LOG.warning("[TransactionManager] Transaction rejected: " + msg);
+            return buildResponse(tx, TransactionStatus.FAILURE, msg);
+        }
+
+        // Check if transaction gas limit exceeds block gas limit
+        if (tx.getGasLimit() > BLOCK_GAS_LIMIT) {
+            String msg = "transaction gas limit (" + tx.getGasLimit() + ") exceeds block gas limit (" + BLOCK_GAS_LIMIT + ")";
+            LOG.warning("[TransactionManager] Transaction rejected: " + msg);
+            return buildResponse(tx, TransactionStatus.FAILURE, msg);
         }
 
         String senderAddr = tx.getFrom().replace("0x", "").toLowerCase();

@@ -19,7 +19,6 @@ public class Service implements DecideListener {
 
     // The in-memory representation of all decided blocks
     private final List<Block> blockchain = new ArrayList<>();
-    private final TransactionExecutor executor;
     private final BlockchainState state;
     private final TransactionManager transactionManager;
 
@@ -28,7 +27,6 @@ public class Service implements DecideListener {
 
         this.state = state;
         this.transactionManager = transactionManager;
-        this.executor = new TransactionExecutor(state);
     }
 
     @Override
@@ -36,7 +34,7 @@ public class Service implements DecideListener {
         LOG.info("[Service] Deciding Block #" + block.getBlockNumber() + " (Decided Hash: " + block.getBlockHash() + ")");
 
         // Execute transactions
-        List<TransactionResponse> results = executor.executeBlock(block, block.getBlockNumber());
+        List<TransactionResponse> results = transactionManager.executeBlock(block, block.getBlockNumber());
 
         // Prepare BlockRecord for persistence
         BlockRecord record = new BlockRecord(

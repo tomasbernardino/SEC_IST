@@ -20,6 +20,7 @@ NR_CLIENTS="${2:-2}"
 OUTPUT_DIR="${3:-$PROJECT_DIR/setup_config}"
 
 KEYS_DIR="$OUTPUT_DIR/keys"
+STORAGE_DIR="$PROJECT_DIR/storage"
 SOURCE_HOSTS="$PROJECT_DIR/hosts.config"
 PASSWORD="sec_project_keys"
 
@@ -57,7 +58,13 @@ COMMON_DIR="$PROJECT_DIR/common"
 cd "$COMMON_DIR"
 mvn -q exec:java \
     -Dexec.mainClass="ist.group29.depchain.common.util.SystemSetupTool" \
-    -Dexec.args="$NR_NODES $NR_CLIENTS $KEYS_DIR $SOURCE_HOSTS $OUTPUT_DIR $PASSWORD"
+    -Dexec.args="$NR_NODES $NR_CLIENTS $KEYS_DIR $STORAGE_DIR $SOURCE_HOSTS $OUTPUT_DIR $PASSWORD"
+
+# Create threshold keys for nodes using the ThresholdPKISetup utility
+echo ""
+echo "Generating threshold keys for each node..."
+cd "$SERVER_DIR"
+mvn exec:java -Dexec.mainClass="ist.group29.depchain.server.crypto.ThresholdPKISetup" -Dexec.args="$KEYS_DIR"
 
 echo ""
 echo "╔══════════════════════════════════════╗"
@@ -66,5 +73,5 @@ echo "╠═══════════════════════�
 echo "║  All files saved to: $OUTPUT_DIR"
 echo "║  - Keys:        $KEYS_DIR"
 echo "║  - Addresses:   $OUTPUT_DIR/addresses.config"
-echo "║  - Genesis:     $OUTPUT_DIR/genesis.json"
+echo "║  - Genesis:     $STORAGE_DIR/genesis.json"
 echo "╚══════════════════════════════════════╝"

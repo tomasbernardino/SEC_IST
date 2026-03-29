@@ -6,11 +6,12 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -101,6 +102,7 @@ public class BlockchainState {
     }
 
     private static BlockchainState loadFromBlock(Path blockPath) throws IOException {
+      LOG.warning("[State] Loading state from block file: " + blockPath);
         BlockchainState state = new BlockchainState();
         try (FileReader reader = new FileReader(blockPath.toFile())) {
             JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
@@ -110,6 +112,7 @@ public class BlockchainState {
             JsonObject accountsNode = root.getAsJsonObject("state");
             for (Map.Entry<String, JsonElement> entry : accountsNode.entrySet()) {
                 String address = entry.getKey();
+                LOG.warning("[BlockChainState] Loading account for address: " + address);
                 JsonObject accNode = entry.getValue().getAsJsonObject();
 
                 BlockchainAccount acc;
@@ -140,6 +143,7 @@ public class BlockchainState {
     }
 
     private static BlockchainState loadGenesis() throws IOException {
+        LOG.warning("biggest BigInteger: " + BigInteger.valueOf(Integer.MAX_VALUE).toString());
         Path genesisPath = STORAGE_DIR.resolve("genesis.json");
         if (!Files.exists(genesisPath)) {
             throw new IOException("Genesis file not found: " + genesisPath);
@@ -155,7 +159,7 @@ public class BlockchainState {
         this.lastBlockNumber = record.blockNumber();
         this.lastBlockHash = record.blockHash();
 
-        Files.createDirectories(STORAGE_DIR);
+        //Files.createDirectories(STORAGE_DIR);
         Path target = STORAGE_DIR.resolve("block" + record.blockNumber() + ".json");
 
         Map<String, Object> blockMap = new HashMap<>();
@@ -163,15 +167,20 @@ public class BlockchainState {
         blockMap.put("block_hash", record.blockHash());
         blockMap.put("previous_block_hash", record.previousBlockHash());
 
-        blockMap.put("transactions", record.transactions().stream()
-                .map(this::transactionToMap).collect(Collectors.toList()));
-        blockMap.put("receipts", record.receipts().stream()
-                .map(this::responseToMap).collect(Collectors.toList()));
+        List<Map<String, Object>> txsList = new ArrayList<>();
+        for (int i = 0; i < record.transactions().size(); i++) {
+            Map<String, Object> txMap = transactionToMap(record.transactions().get(i));
+            if (record.receipts() != null && i < record.receipts().size()) {
+                txMap.put("receipt", responseToMap(record.receipts().get(i)));
+            }
+            txsList.add(txMap);
+        }
+        blockMap.put("transactions", txsList);
 
         Map<String, Object> stateMap = new HashMap<>();
         for (BlockchainAccount account : accounts.values()) {
             Map<String, Object> accMap = new HashMap<>();
-            accMap.put("balance", account.getBalance().toString());
+            accMap.put("balance", account.getBalance());
             if (account instanceof EOA eoa) {
                 accMap.put("nonce", eoa.getNonce());
             } else if (account instanceof ContractAccount contract) {
@@ -198,16 +207,16 @@ public class BlockchainState {
         map.put("gasLimit", tx.getGasLimit());
         map.put("gasPrice", tx.getGasPrice());
         map.put("data", CryptoUtils.bytesToHex(tx.getData().toByteArray()));
-        map.put("sigV", tx.getSigV());
-        map.put("sigR", tx.getSigR());
-        map.put("sigS", tx.getSigS());
+        map.put("sigV", CryptoUtils.bytesToHex(tx.getSigV().toByteArray()));
+        map.put("sigR", CryptoUtils.bytesToHex(tx.getSigR().toByteArray()));
+        map.put("sigS", CryptoUtils.bytesToHex(tx.getSigS().toByteArray()));
         return map;
     }
 
     private Map<String, Object> responseToMap(TransactionResponse res) {
         Map<String, Object> map = new HashMap<>();
         map.put("status", res.getStatus().name());
-        map.put("transactionHash", res.getTransactionHash());
+        map.put("transactionHash", CryptoUtils.bytesToHex(res.getTransactionHash().toByteArray()));
         map.put("gasUsed", res.getGasUsed());
         map.put("blockNumber", res.getBlockNumber());
         map.put("returnData", CryptoUtils.bytesToHex(res.getReturnData().toByteArray()));
