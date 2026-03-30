@@ -6,7 +6,7 @@ import ist.group29.depchain.client.ClientMessages.Transaction;
 import ist.group29.depchain.client.ClientMessages.TransactionResponse;
 
 /**
- * Static factory for wrapping application messages in the wire {@link Envelope}.
+ * Static factory for wrapping application message
  * Senders call {@code EnvelopeFactory.wrap(msg)} before handing bytes to
  * {@link LinkManager}; the router unwraps on the receive side.
  */

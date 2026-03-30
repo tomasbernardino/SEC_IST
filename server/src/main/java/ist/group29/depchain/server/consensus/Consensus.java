@@ -35,8 +35,7 @@ import ist.group29.depchain.server.service.TransactionManager;
 /**
  * Basic HotStuff consensus engine - Algorithm 2 of the paper.
  *
- * Messages arrive via MessageRouter which dispatches ConsensusMessages here
- * and Transactions to the Service layer.
+ * Messages arrive via MessageRouter
  */
 public class Consensus {
 
@@ -160,7 +159,7 @@ public class Consensus {
     }
 
     /**
-     * Called by MessageRouter when a ConsensusMessage arrives (already parsed).
+     * Called by MessageRouter when a ConsensusMessage arrives
      */
     public void onMessage(String senderId, ConsensusMessage msg) {
         int msgView = msg.getViewNumber();
@@ -198,7 +197,7 @@ public class Consensus {
         LOG.info("[Consensus] Reached NEW-VIEW quorum for view " + view + "! Proposing...");
 
         // Extract the QC with the highest view number from all NEW-VIEW messages
-        highQC = QuorumCertificate.genesisQC(); // Initialize with genesisQC
+        highQC = QuorumCertificate.genesisQC();
         for (NewViewMessage nv : newViewMessages.values()) {
             QuorumCertificate qc = new QuorumCertificate(nv.getJustify());
             if (qc.getViewNumber() > highQC.getViewNumber()) {
@@ -312,7 +311,6 @@ public class Consensus {
     /**
      * Handle a VOTE message (covers prepare, pre-commit, and commit votes).
      */
-
     private synchronized void onVote(String senderId, VoteMessage vote, int view) {
         if (!isLeader(view))
             return;
@@ -635,7 +633,7 @@ public class Consensus {
         for (HotStuffNode node : toExecute) {
             LOG.info("[Consensus] DECIDE View " + decidedNode.getViewNumber() + " finalized block with "
                     + node.getBlock().getTransactionsCount() + " txs");
-            // Execute the upcall to Service (application layer) FIXME: the reply of the transaction should be sent in the decider after execution
+            // Execute the upcall to Service 
             decideListener.onDecide(node.getBlock(), node.getViewNumber());
         }
         lastExecutedNodeHash = ByteString.copyFrom(decidedNode.getNodeHash());

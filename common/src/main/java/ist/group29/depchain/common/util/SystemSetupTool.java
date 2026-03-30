@@ -67,9 +67,7 @@ public class SystemSetupTool {
 
         Path truststore = keysDir.resolve("truststore.p12");
 
-        // ═══════════════════════════════════════════════════════
-        // Step 1: Generate RSA node keys
-        // ═══════════════════════════════════════════════════════
+        // Generate RSA node keys
         System.out.println("=== Generating RSA node keys ===");
         List<String> nodeIds = new ArrayList<>();
         for (int i = 0; i < nrNodes; i++) {
@@ -78,9 +76,7 @@ public class SystemSetupTool {
             generateRSAKey(nodeId, keysDir, truststore, password);
         }
 
-        // ═══════════════════════════════════════════════════════
-        // Step 2: Generate client RSA keys (for network auth)
-        // ═══════════════════════════════════════════════════════
+        // Generate client RSA keys (for network auth)
         System.out.println("=== Generating client RSA keys (network auth) ===");
         List<String> clientIds = new ArrayList<>();
         for (int i = 0; i < nrClients; i++) {
@@ -89,9 +85,7 @@ public class SystemSetupTool {
             generateRSAKey(clientId, keysDir, truststore, password);
         }
 
-        // ═══════════════════════════════════════════════════════
-        // Step 3: Generate ECDSA client keys (blockchain identity)
-        // ═══════════════════════════════════════════════════════
+        // Generate ECDSA client keys (blockchain identity)
         System.out.println("=== Generating ECDSA client keys (blockchain) ===");
         List<ECKeyPair> clientKeyPairs = new ArrayList<>();
         Map<String, String> clientAddresses = new LinkedHashMap<>();
@@ -111,9 +105,7 @@ public class SystemSetupTool {
             System.out.println("  " + clientId + " → 0x" + address);
         }
 
-        // ═══════════════════════════════════════════════════════
-        // Step 4: Write addresses.config
-        // ═══════════════════════════════════════════════════════
+        // Write addresses.config
         Path addressesConfig = outputDir.resolve("addresses.config");
         System.out.println("=== Writing " + addressesConfig + " ===");
         try (PrintWriter writer = new PrintWriter(new FileWriter(addressesConfig.toFile()))) {
@@ -133,9 +125,7 @@ public class SystemSetupTool {
                     });
         }
         Files.createDirectories(storageDir);
-        // ═══════════════════════════════════════════════════════
-        // Step 5: Generate genesis.json
-        // ═══════════════════════════════════════════════════════
+        // Generate genesis.json
         System.out.println("=== Generating genesis.json ===");
         generateGenesis(clientAddresses, storageDir.resolve("genesis.json"));
 
@@ -195,10 +185,7 @@ public class SystemSetupTool {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
     // Genesis generation
-    // ═══════════════════════════════════════════════════════════
-
     private static void generateGenesis(Map<String, String> clientAddresses, Path genesisPath)
             throws IOException {
         GenesisBlock genesis = new GenesisBlock();
@@ -215,7 +202,7 @@ public class SystemSetupTool {
 
         GenesisContractAccount istCoin = new GenesisContractAccount();
 
-        // 1. Read compiled bytecode
+        // Read compiled bytecode
         Path binPath = Path.of("..", "server", "target", "generated-sources", "solidity", "bin", "org", "web3j",
                 "model",
                 "ISTCoin.bin");
@@ -236,7 +223,7 @@ public class SystemSetupTool {
 
         istCoin.balance = BigInteger.ZERO;
 
-        // 2. Pre-compute EVM storage slot for client-0's balance
+        // Pre-compute EVM storage slot for client-0's balance
         // ERC20 _balances is the 1st state variable (slot 0)
         // ERC20 _totalSupply is the 3rd state variable (slot 2)
         String totalSupplyHex = "0x" + new BigInteger("10000000000").toString(16); // 100,000,000 * 10^2 decimals
@@ -249,7 +236,7 @@ public class SystemSetupTool {
             String balanceSlot = org.web3j.utils.Numeric.toHexStringNoPrefix(org.web3j.crypto.Hash.sha3(concatenated));
 
             istCoin.storage.put(balanceSlot, totalSupplyHex);
-            istCoin.storage.put("2", totalSupplyHex); // slot 2 is totalSupply
+            istCoin.storage.put("2", totalSupplyHex); // slot 2 -> totalSupply
             System.out.println("  Injected 100,000,000 IST tokens to client-0 (" + client0Address + ")");
         }
 
@@ -257,7 +244,7 @@ public class SystemSetupTool {
 
         Gson gson = new GsonBuilder().setPrettyPrinting().serializeNulls().create();
 
-        // Dynamically calculate the Block Hash by SHA-256 hashing the genesis state
+        // Calculate the Block Hash by SHA-256 hashing the genesis state
         String stateJson = gson.toJson(genesis.state);
         byte[] hashBytes = CryptoUtils.sha256(stateJson.getBytes());
         genesis.block_hash = CryptoUtils.bytesToHex(hashBytes);

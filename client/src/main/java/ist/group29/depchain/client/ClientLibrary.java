@@ -37,7 +37,6 @@ public class ClientLibrary implements MessageListener {
     private final Map<String, CompletableFuture<TransactionResponse>> futures = new ConcurrentHashMap<>();
 
     private final Map<ByteBuffer, String> txHashToReqKey = new ConcurrentHashMap<>();
-    // private final KeyPair myKeys;
 
     private final AtomicLong nonce = new AtomicLong(0);
 
@@ -50,7 +49,6 @@ public class ClientLibrary implements MessageListener {
 
         int f = nodes.size() / 3;
         this.quorumSize = f + 1;
-        // this.myKeys = myKeys;
         // Network Layer Keys
         this.linkManager = new LinkManager(self, nodes, myKeys, nodeKeys);
         this.linkManager.setMessageListener(this);

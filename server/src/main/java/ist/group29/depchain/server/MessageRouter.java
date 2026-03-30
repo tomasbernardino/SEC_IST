@@ -12,9 +12,6 @@ import ist.group29.depchain.server.service.TransactionManager;
 /**
  * Dispatches incoming network payloads to the correct handler.
  *
- * All messages arrive wrapped in an {@link Envelope}. The router parses the
- * envelope and switches on the payload case for deterministic routing:
- *
  *   CONSENSUS   → consensus.onMessage()
  *   TRANSACTION → transactionManager.addPendingTx()
  */
@@ -43,7 +40,7 @@ public class MessageRouter implements MessageListener {
         switch (env.getPayloadCase()) {
             case CONSENSUS    -> consensus.onMessage(senderId, env.getConsensus());
             case TRANSACTION  -> transactionManager.addPendingTx(senderId, env.getTransaction());
-            case TRANSACTION_RESPONSE -> LOG.fine("[Router] TransactionResponse received (no handler yet)");
+            case TRANSACTION_RESPONSE -> LOG.fine("[Router] TransactionResponse received");
             case PAYLOAD_NOT_SET -> LOG.warning("[Router] Empty envelope from " + senderId);
         }
     }

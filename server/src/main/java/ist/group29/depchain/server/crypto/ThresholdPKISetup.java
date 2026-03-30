@@ -17,7 +17,7 @@ import java.io.ObjectOutputStream;
  *   nrNodes   - number of nodes (default: 4)
  *
  * k (threshold) is derived from n using the BFT quorum formula:
- *   k = n - floor((n-1)/3)
+ *   k = n - (n-1)/3
  */
 public class ThresholdPKISetup {
 

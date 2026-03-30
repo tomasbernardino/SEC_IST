@@ -25,7 +25,7 @@ import java.util.logging.Level;
 
 public class App {
     public static void main(String[] args) throws Exception {
-        // Silence default logger output on the client terminal for a clean prompt
+
         Logger rootLogger = Logger.getLogger("");
         for (Handler handler : rootLogger.getHandlers()) {
             handler.setLevel(Level.WARNING);

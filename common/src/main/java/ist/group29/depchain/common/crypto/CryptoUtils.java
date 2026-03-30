@@ -158,13 +158,8 @@ public final class CryptoUtils {
         return data;
     }
     
-    // ────────────────────────────────────────────────────────────
-    // ECDSA (secp256k1) — Blockchain transaction signing
-    // ────────────────────────────────────────────────────────────
-
     /**
-     * Sign data with an ECDSA private key (secp256k1).
-     * The data parts are keccak-hashed before signing.
+     * Sign data with an ECDSA private key (secp256k1)
      */
     public static ClientSignature ecSign(ECKeyPair keyPair, byte[]... parts) {
         byte[] hash = keccakHash(parts);
@@ -173,8 +168,7 @@ public final class CryptoUtils {
     }
 
     /**
-     * Recover the signer's public key from an ECDSA signature (ecrecover).
-     * Returns the public key as a BigInteger.
+     * Recover the signer's public key from an ECDSA signature
      */
     public static BigInteger ecRecover(ClientSignature signature, byte[]... parts)
             throws SignatureException {
@@ -184,7 +178,7 @@ public final class CryptoUtils {
 
     /**
      * Verify that the recovered address from an ECDSA signature matches the
-     * expected sender.
+     * expected sender
      */
     public static boolean ecVerify(ClientSignature signature, String expectedAddress, byte[]... parts) {
         try {
@@ -199,18 +193,18 @@ public final class CryptoUtils {
         }
     }
 
-    /** Derive an Ethereum-standard address from an ECDSA key pair. */
+    /** Derive an Ethereum-standard address from an ECDSA key pair */
     public static String getAddress(ECKeyPair keyPair) {
         return Keys.getAddress(keyPair);
     }
 
-    /** Load an ECDSA key pair from a .key file (web3j serialized format). */
+    /** Load an ECDSA key pair from a .key file */
     public static ECKeyPair loadECKeyPair(Path keyFile) throws IOException {
         byte[] bytes = java.nio.file.Files.readAllBytes(keyFile);
         return Keys.deserialize(bytes);
     }
 
-    /** Create a new random ECDSA key pair (secp256k1). */
+    /** Create a new random ECDSA key pair */
     public static ECKeyPair createECKeyPair() {
         try {
             return Keys.createEcKeyPair();
