@@ -118,7 +118,7 @@ public class App {
                                 break;
                             }
                             String contract = parts[1];
-                            byte[] data = hexStringToByteArray(parts[2]);
+                            byte[] data = CryptoUtils.hexToBytes(parts[2]);
                             System.out.println("Submitting contract to " + contract);
                             future = clientLibrary.submitTransaction(contract, 0, data);
                             break;
@@ -146,15 +146,5 @@ public class App {
 
         clientLibrary.stop();
         System.exit(0);
-    }
-
-    private static byte[] hexStringToByteArray(String s) {
-        int len = s.length();
-        byte[] data = new byte[len / 2];
-        for (int i = 0; i < len; i += 2) {
-            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
-                                 + Character.digit(s.charAt(i+1), 16));
-        }
-        return data;
     }
 }

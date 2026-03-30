@@ -28,8 +28,8 @@ import ist.group29.depchain.common.crypto.CryptoUtils;
  * 4. addresses.config (client blockchain addresses)
  * 5. genesis.json (EOA accounts + contract accounts)
  *
- * Usage: SystemSetupTool <nrNodes> <nrClients> <keysDir> <hostsConfig>
- * <password>
+ * Usage: SystemSetupTool <nrNodes> <nrClients> <keysDir> <storageDir>
+ * <hostsConfig> <outputDir> <password>
  */
 public class SystemSetupTool {
 
@@ -38,7 +38,7 @@ public class SystemSetupTool {
     private static final String IST_COIN_ADDRESS = "1111111111111111111111111111111111111111";
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 6) {
+        if (args.length < 7) {
             System.err.println(
                     "Usage: SystemSetupTool <nrNodes> <nrClients> <keysDir> <storageDir> <hostsConfig> <outputDir> <password>");
             System.exit(1);
