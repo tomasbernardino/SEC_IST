@@ -11,19 +11,25 @@ import java.io.ObjectOutputStream;
 /**
  * Utility to generate and distribute Threshold Signature shares
  * It uses the threshsig library to generate RSA-based threshold keys.
+ *
+ * Usage: ThresholdPKISetup <keysDir> [nrNodes]
+ *   keysDir   - directory to write threshold key files
+ *   nrNodes   - number of nodes (default: 4)
+ *
+ * k (threshold) is derived from n using the BFT quorum formula:
+ *   k = n - floor((n-1)/3)
  */
 public class ThresholdPKISetup {
 
     public static void main(String[] args) throws Exception {
-        int n = 4;
-        int k = 3; 
+        String keysPath = (args.length > 0) ? args[0] : "keys";
+        int n = (args.length > 1) ? Integer.parseInt(args[1]) : 4;
+        int k = n - (n - 1) / 3;
         int keysize = 2048;
 
-        String keysPath = (args.length > 0) ? args[0] : "keys";
         File keysDir = new File(keysPath);
 
-        System.out.println("[Threshold PKI] Manual Setup Utility");
-        System.out.println("Running this will re-generate all threshold keys.");
+        System.out.println("[Threshold PKI] Setup Utility");
         System.out.println(
                 "[Threshold PKI] Generating RSA keys for n=" + n + ", k=" + k + " into: " + keysDir.getAbsolutePath());
 

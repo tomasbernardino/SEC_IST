@@ -18,6 +18,8 @@ import org.web3j.crypto.Keys;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
+import ist.group29.depchain.common.crypto.CryptoUtils;
+
 /**
  * Unified offline tool that generates all static system artifacts:
  * 1. RSA node keys (via keytool subprocess)
@@ -255,11 +257,10 @@ public class SystemSetupTool {
 
         Gson gson = new GsonBuilder().setPrettyPrinting().serializeNulls().create();
 
-        // Dynamically calculate the Block Hash mathematically by hashing the genesis
-        // state
+        // Dynamically calculate the Block Hash by SHA-256 hashing the genesis state
         String stateJson = gson.toJson(genesis.state);
-        byte[] hashBytes = org.web3j.crypto.Hash.sha3(stateJson.getBytes());
-        genesis.block_hash = org.web3j.utils.Numeric.toHexStringNoPrefix(hashBytes);
+        byte[] hashBytes = CryptoUtils.sha256(stateJson.getBytes());
+        genesis.block_hash = CryptoUtils.bytesToHex(hashBytes);
 
         // Export the final file
         String json = gson.toJson(genesis);
