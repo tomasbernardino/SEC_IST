@@ -43,7 +43,6 @@ public class ClientLibrary implements MessageListener {
     private final Map<String, Set<String>> pendingBalanceRequests = new ConcurrentHashMap<>();
     private final Map<String, NativeBalanceResponse> bestBalanceResponses = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<NativeBalanceResponse>> balanceFutures = new ConcurrentHashMap<>();
-    // private final KeyPair myKeys;
 
     private final AtomicLong nonce = new AtomicLong(0);
     // Use a separate counter for balance queries to avoid nonce collision with transactions
@@ -141,13 +140,7 @@ public class ClientLibrary implements MessageListener {
                     }
                 });
     }
-/*   private String normalizeAddress(String address) {
-        String normalized = address == null ? "" : address.trim().toLowerCase();
-        if (normalized.startsWith("0x")) {
-            normalized = normalized.substring(2);
-        }
-        return normalized;
-    } */
+
     public CompletableFuture<NativeBalanceResponse> getNativeBalance(String address) {
         String normalizedAddress = address == null ? "" : address.trim().toLowerCase();
         if (normalizedAddress.startsWith("0x")) {

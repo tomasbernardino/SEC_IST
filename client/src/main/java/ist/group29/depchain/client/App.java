@@ -28,7 +28,6 @@ import ist.group29.depchain.common.network.ProcessInfo;
 
 public class App {
     public static void main(String[] args) throws Exception {
-        // Silence default logger output on the client terminal for a clean prompt
         Logger rootLogger = Logger.getLogger("");
         for (Handler handler : rootLogger.getHandlers()) {
             handler.setLevel(Level.WARNING);
@@ -202,7 +201,7 @@ public class App {
 
                         if (!dataHex.isEmpty()) {
                             long[] gas = promptGas(scanner, false);
-                            future = clientLibrary.submitTransaction(istCoinAddress, 0, hexStringToByteArray(dataHex), gas[0], gas[1]);
+                            future = clientLibrary.submitTransaction(istCoinAddress, 0, CryptoUtils.hexToBytes(dataHex), gas[0], gas[1]);
                         }
 
                     } else if (choice.equals("4")) {
@@ -212,7 +211,7 @@ public class App {
                         System.out.print("Call Data (without 0x): ");
                         String hexData = scanner.nextLine().trim();
                         long[] gas = promptGas(scanner, false);
-                        future = clientLibrary.submitTransaction(contract, 0, hexStringToByteArray(hexData), gas[0], gas[1]);
+                        future = clientLibrary.submitTransaction(contract, 0, CryptoUtils.hexToBytes(hexData), gas[0], gas[1]);
                     } else {
                         System.out.println("Unknown option.");
                         continue;
@@ -299,15 +298,6 @@ public class App {
         return String.format("%64s", hex).replace(' ', '0').toLowerCase();
     }
 
-    private static byte[] hexStringToByteArray(String s) {
-        int len = s.length();
-        byte[] data = new byte[len / 2];
-        for (int i = 0; i < len; i += 2) {
-            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
-                                 + Character.digit(s.charAt(i+1), 16));
-        }
-        return data;
-    }
 
     private static String normalizeHex(String value) {
         if (value == null) {

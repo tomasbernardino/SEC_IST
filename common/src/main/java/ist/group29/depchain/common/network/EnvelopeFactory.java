@@ -1,14 +1,14 @@
 package ist.group29.depchain.common.network;
 
-import ist.group29.depchain.network.NetworkMessages.Envelope;
-import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
 import ist.group29.depchain.client.ClientMessages.NativeBalanceRequest;
 import ist.group29.depchain.client.ClientMessages.NativeBalanceResponse;
 import ist.group29.depchain.client.ClientMessages.Transaction;
 import ist.group29.depchain.client.ClientMessages.TransactionResponse;
+import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
+import ist.group29.depchain.network.NetworkMessages.Envelope;
 
 /**
- * Static factory for wrapping application messages in the wire {@link Envelope}.
+ * Static factory for wrapping application message
  * Senders call {@code EnvelopeFactory.wrap(msg)} before handing bytes to
  * {@link LinkManager}; the router unwraps on the receive side.
  */

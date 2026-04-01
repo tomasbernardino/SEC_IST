@@ -95,7 +95,6 @@ public class BlockchainState {
             LOG.info("[State] Resuming from existing block: " + latestFile.get().getFileName());
             return loadFromBlock(latestFile.get());
         } else {
-            // Try loading the genesis
             LOG.info("[State] No existing blocks found. Loading genesis.");
             return loadGenesis();
         }
@@ -159,7 +158,6 @@ public class BlockchainState {
         this.lastBlockNumber = record.blockNumber();
         this.lastBlockHash = record.blockHash();
 
-        //Files.createDirectories(STORAGE_DIR);
         Path target = STORAGE_DIR.resolve("block" + record.blockNumber() + ".json");
 
         Map<String, Object> blockMap = new HashMap<>();

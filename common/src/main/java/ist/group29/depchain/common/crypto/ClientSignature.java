@@ -5,11 +5,9 @@ import java.util.Arrays;
 
 import org.web3j.crypto.Sign.SignatureData;
 
-import ist.group29.depchain.common.crypto.CryptoUtils;
-
 /**
- * Serializable wrapper for an ECDSA signature (v, r, s components).
- * Used for signing blockchain transactions with secp256k1.
+ * Serializable wrapper for an ECDSA signature (v, r, s components)
+ * Used for signing blockchain transactions
  */
 public record ClientSignature(byte[] v, byte[] r, byte[] s) implements Serializable {
 
@@ -19,24 +17,6 @@ public record ClientSignature(byte[] v, byte[] r, byte[] s) implements Serializa
 
     public SignatureData toSignatureData() {
         return new SignatureData(v, r, s);
-    }
-
-    /** Hex-encode v for proto/JSON transport */
-    public String vHex() {
-        return CryptoUtils.bytesToHex(v);
-    }
-
-    public String rHex() {
-        return CryptoUtils.bytesToHex(r);
-    }
-
-    public String sHex() {
-        return CryptoUtils.bytesToHex(s);
-    }
-
-    /** Reconstruct from hex strings */
-    public static ClientSignature fromHex(String vHex, String rHex, String sHex) {
-        return new ClientSignature(CryptoUtils.hexToBytes(vHex), CryptoUtils.hexToBytes(rHex), CryptoUtils.hexToBytes(sHex));
     }
 
     @Override

@@ -3,7 +3,7 @@ syntax = "proto3";
 option java_package = "ist.group29.depchain.client";
 option java_outer_classname = "ClientMessages";
 
-// --- Transaction (Ethereum-inspired) ---
+// Transaction (Ethereum-inspired)
 // Type is inferred from fields:
 //   - to set + data filled → contract call
 //   - to set + data empty  → native DepCoin transfer
@@ -13,15 +13,15 @@ message Transaction {
     string to        = 2;  // Recipient address
     uint64 value     = 3;  // Amount to transfer (0 for pure contract calls)
     uint64 nonce     = 4;  // Per-account sequential counter for replay protection
-    uint64 gas_price = 5;  // Price per gas unit in DepCoin. Must be > 0
-    uint64 gas_limit = 6;  // Max gas units the sender is willing to spend Must be > 0
+    uint64 gas_price = 5;  // Price per gas unit in DepCoin, must be > 0
+    uint64 gas_limit = 6;  // Max gas units the sender is willing to spend, must be > 0
     bytes  data      = 7;  // EVM calldata for contract calls
     bytes  sig_v     = 8;  // ECDSA signature v component
     bytes  sig_r     = 9;  // ECDSA signature r component
     bytes  sig_s     = 10; // ECDSA signature s component
 }
 
-// --- Transaction Response (simplified Ethereum Receipt) ---
+// Transaction Response (simplified Ethereum Receipt)
 
 enum TransactionStatus {
     SUCCESS = 0;
@@ -37,7 +37,7 @@ message TransactionResponse {
     bytes  transaction_hash  = 2;  // SHA-256 hash of the original Transaction
     uint64 block_number      = 3;  // Block in which the transaction was included
     uint64 gas_used          = 4;  // Actual gas consumed by execution
-    bytes  return_data       = 5;  // EVM return data (function return values, or new contract address for deploys)
+    bytes  return_data       = 5;  // EVM return data
     string error_message     = 6;  // optional human-readable detail about failures
 }
 

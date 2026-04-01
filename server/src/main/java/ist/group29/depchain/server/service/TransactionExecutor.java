@@ -69,7 +69,7 @@ public class TransactionExecutor {
         LOG.info("[Executor] Processing tx from " + tx.getFrom() + " to " + tx.getTo() + " nonce=" + tx.getNonce());
 
         // Normalize addresses (strip 0x prefix, lowercase) to match state keys
-        String fromAddr = normalizeAddress(tx.getFrom());
+        String fromAddr = CryptoUtils.normalizeAddress(tx.getFrom());
 
         // Pre-execution validation
         BlockchainAccount senderAcc = state.getAccount(fromAddr);
@@ -117,7 +117,7 @@ public class TransactionExecutor {
 
         chargeGas(sender, gasUsed, tx.getGasPrice());
 
-        String toAddr = normalizeAddress(tx.getTo());
+        String toAddr = CryptoUtils.normalizeAddress(tx.getTo());
         BlockchainAccount receiverAcc = state.getOrCreateAccount(toAddr);
         sender.debit(BigInteger.valueOf(tx.getValue()));
         receiverAcc.credit(BigInteger.valueOf(tx.getValue()));
@@ -127,7 +127,7 @@ public class TransactionExecutor {
     }
 
     private TransactionResponse executeContractCall(Transaction tx, EOA sender, long blockNumber) {
-        String toAddr = normalizeAddress(tx.getTo());
+        String toAddr = CryptoUtils.normalizeAddress(tx.getTo());
         BlockchainAccount receiverAcc = state.getAccount(toAddr);
         if (!(receiverAcc instanceof ContractAccount contractAcc)) {
             return errorResponse(tx, TransactionStatus.FAILURE, "Destination is not a contract account.");
@@ -254,7 +254,7 @@ public class TransactionExecutor {
 
     private void commitBesuChanges(SimpleWorld besuWorld, BlockchainState destination) {
         for (org.hyperledger.besu.evm.account.Account besuAcc : besuWorld.getTouchedAccounts()) {
-            String addr = normalizeAddress(besuAcc.getAddress().toHexString());
+            String addr = CryptoUtils.normalizeAddress(besuAcc.getAddress().toHexString());
             BlockchainAccount ourAcc = destination.getOrCreateAccount(addr);
 
             ourAcc.setBalance(besuAcc.getBalance().toBigInteger());
@@ -412,10 +412,6 @@ public class TransactionExecutor {
 
     private static String readAddress(Bytes data, int offset) {
         return "0x" + CryptoUtils.bytesToHex(data.slice(offset + 12, 20).toArray());
-    }
-
-    private String normalizeAddress(String address) {
-        return address.replace("0x", "").toLowerCase();
     }
 
     private Address toBesuAddress(String address) {

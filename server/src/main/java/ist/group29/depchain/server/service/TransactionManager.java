@@ -164,7 +164,7 @@ public class TransactionManager {
 
     public void handleNativeBalanceRequest(String senderId, NativeBalanceRequest request) {
 
-        String senderAddr = request.getAddress().replace("0x", "").toLowerCase();
+        String senderAddr = CryptoUtils.normalizeAddress(request.getAddress());
         BlockchainAccount account = state.getAccount(senderAddr);
         BigInteger balance = account != null ? account.getBalance() : BigInteger.ZERO;
 
@@ -215,7 +215,7 @@ public class TransactionManager {
             return buildResponse(tx, TransactionStatus.FAILURE, msg);
         }
 
-        String senderAddr = tx.getFrom().replace("0x", "").toLowerCase();
+        String senderAddr = CryptoUtils.normalizeAddress(tx.getFrom());
         BlockchainAccount account = state.getAccount(senderAddr);
 
         if (account == null) {
@@ -249,7 +249,7 @@ public class TransactionManager {
 
         // reject unknown "to" addresses for native transfers 
         if (!tx.getTo().isEmpty()) {
-            String destinationAddr = tx.getTo().replace("0x", "").toLowerCase();
+            String destinationAddr = CryptoUtils.normalizeAddress(tx.getTo());
             BlockchainAccount destAcc = state.getAccount(destinationAddr);
             if (destAcc == null) {
                 String msg = "recipient account " + destinationAddr + " does not exist";

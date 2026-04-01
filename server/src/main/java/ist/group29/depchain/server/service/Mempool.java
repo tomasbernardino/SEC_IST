@@ -30,7 +30,7 @@ public class Mempool {
             return false;
         }
 
-        String sender = tx.getFrom().replace("0x", "").toLowerCase();
+        String sender = CryptoUtils.normalizeAddress(tx.getFrom());
         long nonce = tx.getNonce();
 
         TreeMap<Long, Transaction> senderTxs = txsBySender.computeIfAbsent(sender, k -> new TreeMap<>());
@@ -66,7 +66,7 @@ public class Mempool {
             String hash = getHash(tx);
             seenHashes.remove(hash);
             
-            String sender = tx.getFrom().replace("0x", "").toLowerCase();
+            String sender = CryptoUtils.normalizeAddress(tx.getFrom());
             TreeMap<Long, Transaction> senderTxs = txsBySender.get(sender);
             if (senderTxs != null) {
                 senderTxs.remove(tx.getNonce());
