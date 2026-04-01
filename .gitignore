@@ -25,3 +25,15 @@ target/
 # keys
 *.p12
 *.key
+
+# solc output
+solc
+
+# sol bin bytecodes
+*.bytecode
+
+# stored blocks
+storage/*
+
+# setup config
+setup_config/*

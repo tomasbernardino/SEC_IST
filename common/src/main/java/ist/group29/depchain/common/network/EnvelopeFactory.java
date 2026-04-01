@@ -2,6 +2,8 @@ package ist.group29.depchain.common.network;
 
 import ist.group29.depchain.network.NetworkMessages.Envelope;
 import ist.group29.depchain.network.ConsensusMessages.ConsensusMessage;
+import ist.group29.depchain.client.ClientMessages.NativeBalanceRequest;
+import ist.group29.depchain.client.ClientMessages.NativeBalanceResponse;
 import ist.group29.depchain.client.ClientMessages.Transaction;
 import ist.group29.depchain.client.ClientMessages.TransactionResponse;
 
@@ -24,5 +26,13 @@ public final class EnvelopeFactory {
 
     public static byte[] wrap(TransactionResponse resp) {
         return Envelope.newBuilder().setTransactionResponse(resp).build().toByteArray();
+    }
+
+    public static byte[] wrap(NativeBalanceRequest req) {
+        return Envelope.newBuilder().setNativeBalanceRequest(req).build().toByteArray();
+    }
+
+    public static byte[] wrap(NativeBalanceResponse resp) {
+        return Envelope.newBuilder().setNativeBalanceResponse(resp).build().toByteArray();
     }
 }

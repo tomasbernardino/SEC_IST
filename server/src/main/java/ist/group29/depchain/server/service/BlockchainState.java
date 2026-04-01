@@ -101,7 +101,7 @@ public class BlockchainState {
         }
     }
 
-    private static BlockchainState loadFromBlock(Path blockPath) throws IOException {
+    public static BlockchainState loadFromBlock(Path blockPath) throws IOException {
       LOG.warning("[State] Loading state from block file: " + blockPath);
         BlockchainState state = new BlockchainState();
         try (FileReader reader = new FileReader(blockPath.toFile())) {
