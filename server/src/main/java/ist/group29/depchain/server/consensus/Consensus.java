@@ -81,6 +81,9 @@ public class Consensus {
 
     private int lastVotedPrepareView = 0;
 
+    private int lastPreCommitView = 0;
+    private int lastCommitView = 0;
+
     private ByteString lastExecutedNodeHash = ByteString.copyFrom(HotStuffNode.genesis().getNodeHash());
 
     // Buffers a PREPARE message while waiting for a sync response.
@@ -197,9 +200,14 @@ public class Consensus {
         LOG.info("[Consensus] Reached NEW-VIEW quorum for view " + view + "! Proposing...");
 
         // Extract the QC with the highest view number from all NEW-VIEW messages
+        // Skip QCs with invalid signatures (e.g., corrupted by a Byzantine leader)
         highQC = QuorumCertificate.genesisQC();
         for (NewViewMessage nv : newViewMessages.values()) {
             QuorumCertificate qc = new QuorumCertificate(nv.getJustify());
+            if (!qc.isValid(cryptoManager)) {
+                LOG.warning("[Consensus] Skipping QC from " + view + " with invalid signature (view " + qc.getViewNumber() + ")");
+                continue;
+            }
             if (qc.getViewNumber() > highQC.getViewNumber()) {
                 highQC = qc;
             }
@@ -392,6 +400,8 @@ public class Consensus {
             return;
         if (currentProposal == null)
             return;
+        if (view <= lastPreCommitView)
+            return;
 
         QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
         if (!qc.isValid(cryptoManager)) {
@@ -404,6 +414,7 @@ public class Consensus {
         }
 
         prepareQC = qc;
+        lastPreCommitView = view;
         LOG.info("[Consensus] Accepted PRE-COMMIT in view " + view);
         sendVote(QuorumCertificate.PRE_COMMIT, view, currentProposal.getNodeHash());
     }
@@ -418,6 +429,8 @@ public class Consensus {
             return;
         if (currentProposal == null)
             return;
+        if (view <= lastCommitView)
+            return;
 
         QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
         if (!qc.isValid(cryptoManager)) {
@@ -431,6 +444,7 @@ public class Consensus {
         }
 
         lockedQC = qc;
+        lastCommitView = view;
         LOG.info("[Consensus] Locked on view " + view + " - lockedQC=" + lockedQC);
         sendVote(QuorumCertificate.COMMIT, view, currentProposal.getNodeHash());
     }
