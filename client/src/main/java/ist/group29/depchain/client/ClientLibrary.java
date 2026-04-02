@@ -43,6 +43,7 @@ public class ClientLibrary implements MessageListener {
     private final Map<String, Set<String>> pendingBalanceRequests = new ConcurrentHashMap<>();
     private final Map<String, NativeBalanceResponse> bestBalanceResponses = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<NativeBalanceResponse>> balanceFutures = new ConcurrentHashMap<>();
+    private volatile byte[] lastSentEnvelope;
 
     private final AtomicLong nonce = new AtomicLong(0);
     // Use a separate counter for balance queries to avoid nonce collision with transactions
@@ -125,8 +126,8 @@ public class ClientLibrary implements MessageListener {
         pendingRequests.put(requestKey, ConcurrentHashMap.newKeySet());
         txHashToReqKey.put(txHashKey, requestKey);
 
-        // Broadcast the signed transaction wrapped in an Envelope
-        linkManager.broadcast(EnvelopeFactory.wrap(signedTx));
+        // Broadcast the signed transaction wrapped in an Envelope and store it for potential replay
+        broadcastAndRemember(EnvelopeFactory.wrap(signedTx));
 
         // Wrap with timeout + cleanup on expiry
         return future
@@ -159,7 +160,7 @@ public class ClientLibrary implements MessageListener {
         balanceFutures.put(requestId, future);
         pendingBalanceRequests.put(requestId, ConcurrentHashMap.newKeySet());
 
-        linkManager.broadcast(EnvelopeFactory.wrap(request));
+        broadcastAndRemember(EnvelopeFactory.wrap(request));
 
         return future
                 .orTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -250,7 +251,22 @@ public class ClientLibrary implements MessageListener {
         return myAddress;
     }
 
+    public boolean replayLastMessage() {
+        byte[] raw = lastSentEnvelope;
+        if (raw == null) {
+            return false;
+        }
+
+        linkManager.broadcast(raw.clone());
+        return true;
+    }
+
     public void stop() {
         linkManager.shutdown();
+    }
+
+    private void broadcastAndRemember(byte[] envelopeBytes) {
+        lastSentEnvelope = envelopeBytes.clone();
+        linkManager.broadcast(envelopeBytes);
     }
 }

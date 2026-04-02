@@ -92,11 +92,12 @@ public class App {
                 System.out.println("2. DepCoin Transfer");
                 System.out.println("3. ISTCoin Operation Menu");
                 System.out.println("4. Custom ISTCoin Call (Raw Calldata)");
-                System.out.println("5. Exit");
+                System.out.println("5. Replay Last Sent Message");
+                System.out.println("6. Exit");
                 System.out.print("Select an option: ");
 
                 String choice = scanner.nextLine().trim();
-                if (choice.equals("5") || choice.equalsIgnoreCase("exit")) break;
+                if (choice.equals("6") || choice.equalsIgnoreCase("exit")) break;
 
                 try {
                     CompletableFuture<TransactionResponse> future = null;
@@ -212,6 +213,13 @@ public class App {
                         String hexData = scanner.nextLine().trim();
                         long[] gas = promptGas(scanner, false);
                         future = clientLibrary.submitTransaction(contract, 0, CryptoUtils.hexToBytes(hexData), gas[0], gas[1]);
+                    } else if (choice.equals("5")) {
+                        if (clientLibrary.replayLastMessage()) {
+                            System.out.println("Last serialized message replayed exactly as it was originally sent.");
+                        } else {
+                            System.out.println("No previous client message is available to replay.");
+                        }
+                        continue;
                     } else {
                         System.out.println("Unknown option.");
                         continue;
