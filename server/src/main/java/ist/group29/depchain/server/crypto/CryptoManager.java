@@ -34,6 +34,16 @@ public class CryptoManager {
         }
     }
 
+    /**
+     * Used by ByzantineConsensus to create a wrapping subclass that
+     * overrides specific methods for fault injection.
+     */
+    protected CryptoManager(CryptoManager other) {
+        this.myIndex = other.myIndex;
+        this.groupKey = other.groupKey;
+        this.privateShare = other.privateShare;
+    }
+
     public int getMyIndex() {
         return myIndex;
     }

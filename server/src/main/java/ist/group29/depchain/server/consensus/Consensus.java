@@ -44,19 +44,19 @@ public class Consensus {
     private static final long INITIAL_TIMEOUT_MS = 4_000;
     private static final long PROPOSAL_RETRY_MS = 1_000;
 
-    private final String selfId;
-    private final List<String> sortedNodeIds;
-    private final int n;
-    private final int f;
-    private final int quorum;
-    private final LinkManager linkManager;
+    protected final String selfId;
+    protected final List<String> sortedNodeIds;
+    protected final int n;
+    protected final int f;
+    protected final int quorum;
+    protected final LinkManager linkManager;
     private final DecideListener decideListener;
     private final TransactionManager transactionManager;
-    private CryptoManager cryptoManager;
+    protected CryptoManager cryptoManager;
 
-    private final Map<ByteString, HotStuffNode> blockStore = new ConcurrentHashMap<>();
+    protected final Map<ByteString, HotStuffNode> blockStore = new ConcurrentHashMap<>();
 
-    private volatile int curView = 1;
+    protected volatile int curView = 1;
     private QuorumCertificate lockedQC = QuorumCertificate.genesisQC();
     private QuorumCertificate prepareQC = QuorumCertificate.genesisQC();
 
@@ -69,9 +69,9 @@ public class Consensus {
     // Stores NewViewMessages for each view
     private final Map<Integer, Map<String, NewViewMessage>> newViewAccumulator = new ConcurrentHashMap<>();
 
-    private volatile HotStuffNode currentProposal = null;
+    protected volatile HotStuffNode currentProposal = null;
 
-    private QuorumCertificate highQC = null;
+    protected QuorumCertificate highQC = null;
 
     private final ScheduledExecutorService pacemaker;
 
@@ -94,8 +94,7 @@ public class Consensus {
 
     public Consensus(String selfId, List<String> allNodeIds,
             LinkManager linkManager, DecideListener decideListener, TransactionManager transactionManager, String keysDir) {
-        this(selfId, allNodeIds, linkManager, decideListener, transactionManager, createDefaultCrypto(selfId, keysDir),
-                createDefaultPacemaker());
+        this(selfId, allNodeIds, linkManager, decideListener, transactionManager, createDefaultCrypto(selfId, keysDir), createDefaultPacemaker());
     }
 
     public Consensus(String selfId, List<String> allNodeIds,
@@ -256,7 +255,7 @@ public class Consensus {
                 .setPrepare(prepare)
                 .build();
         linkManager.broadcast(EnvelopeFactory.wrap(prepareMsg));
-        
+
         cancelBlockProposalTimer(); // Proposal is out, no need for retry
         onPrepare(selfId, prepare, curView);
         highQC = null;
@@ -578,7 +577,7 @@ public class Consensus {
         return sortedNodeIds.get((view - 1) % n);
     }
 
-    private boolean isLeader(int view) {
+    protected boolean isLeader(int view) {
         return selfId.equals(leader(view));
     }
 
@@ -597,7 +596,7 @@ public class Consensus {
         }
     }
 
-    private synchronized void sendVote(String phase, int view, byte[] nodeHash) {
+    protected synchronized void sendVote(String phase, int view, byte[] nodeHash) {
         LOG.info("[Consensus] Node " + selfId + " casting vote for phase=" + phase + " view=" + view);
 
         try {
@@ -647,7 +646,7 @@ public class Consensus {
         for (HotStuffNode node : toExecute) {
             LOG.info("[Consensus] DECIDE View " + decidedNode.getViewNumber() + " finalized block with "
                     + node.getBlock().getTransactionsCount() + " txs");
-            // Execute the upcall to Service 
+            // Execute the upcall to Service
             decideListener.onDecide(node.getBlock(), node.getViewNumber());
         }
         lastExecutedNodeHash = ByteString.copyFrom(decidedNode.getNodeHash());
