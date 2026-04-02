@@ -13,9 +13,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.web3j.crypto.ECKeyPair;
+import org.web3j.crypto.Hash;
 import org.web3j.crypto.Keys;
 import org.web3j.utils.Numeric;
-import org.web3j.crypto.Hash;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 

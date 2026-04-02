@@ -64,7 +64,7 @@ mvn -q exec:java \
 echo ""
 echo "Generating threshold keys for each node..."
 cd "$SERVER_DIR"
-mvn exec:java -Dexec.mainClass="ist.group29.depchain.server.crypto.ThresholdPKISetup" -Dexec.args="$KEYS_DIR"
+mvn exec:java -Dexec.mainClass="ist.group29.depchain.server.crypto.ThresholdPKISetup" -Dexec.args="$KEYS_DIR $NR_NODES"
 
 echo ""
 echo "╔══════════════════════════════════════╗"

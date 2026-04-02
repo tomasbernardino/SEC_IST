@@ -40,9 +40,9 @@ public class MessageRouter implements MessageListener {
         switch (env.getPayloadCase()) {
             case CONSENSUS    -> consensus.onMessage(senderId, env.getConsensus());
             case TRANSACTION  -> transactionManager.addPendingTx(senderId, env.getTransaction());
-            case TRANSACTION_RESPONSE -> LOG.fine("[Router] TransactionResponse received (no handler)");
+            case TRANSACTION_RESPONSE -> LOG.fine("[Router] TransactionResponse received");
             case NATIVE_BALANCE_REQUEST -> transactionManager.handleNativeBalanceRequest(senderId, env.getNativeBalanceRequest());
-            case NATIVE_BALANCE_RESPONSE -> LOG.fine("[Router] NativeBalanceResponse received on server (no handler)");
+            case NATIVE_BALANCE_RESPONSE -> LOG.fine("[Router] NativeBalanceResponse received on server");
             case PAYLOAD_NOT_SET -> LOG.warning("[Router] Empty envelope from " + senderId);
         }
     }

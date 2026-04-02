@@ -29,6 +29,7 @@ import ist.group29.depchain.common.network.ProcessInfo;
 
 public class App {
     public static void main(String[] args) throws Exception {
+
         Logger rootLogger = Logger.getLogger("");
         for (Handler handler : rootLogger.getHandlers()) {
             handler.setLevel(Level.WARNING);

@@ -32,6 +32,9 @@ import ist.group29.depchain.common.network.ProcessInfo;
 import ist.group29.depchain.server.consensus.Consensus;
 import ist.group29.depchain.server.crypto.CryptoManager;
 import ist.group29.depchain.server.service.Service;
+import ist.group29.depchain.server.service.BlockchainState;
+import ist.group29.depchain.server.service.TransactionManager;
+import ist.group29.depchain.server.MessageRouter;
 import ist.group29.depchain.server.service.account.BlockchainAccount;
 import ist.group29.depchain.server.service.account.EOA;
 
@@ -92,20 +95,23 @@ public class E2ETest {
 
             TestNode tn = new TestNode();
             tn.id = id;
-            tn.service = new Service();
             tn.linkManager = new LinkManager(processInfos.get(id), peers, keyPairs.get(id), publicKeys);
+
+            BlockchainState state = new BlockchainState();
+            TransactionManager tm = new TransactionManager(state, tn.linkManager);
+            tn.service = new Service(state, tm);
 
             CryptoManager crypto;
             if (simulateByzantineLeader && i == 0) {
-                crypto = new ByzantineCryptoManager(id, "../keys");
+                crypto = new ByzantineCryptoManager(id, "../setup_config/keys");
             } else {
-                crypto = new CryptoManager(id, "../keys");
+                crypto = new CryptoManager(id, "../setup_config/keys");
             }
 
             tn.pacemaker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
-            tn.consensus = new Consensus(id, nodeIds, tn.linkManager, tn.service, crypto, tn.pacemaker);
+            tn.consensus = new Consensus(id, nodeIds, tn.linkManager, tn.service, tm, crypto, tn.pacemaker);
 
-            tn.linkManager.setMessageListener(tn.consensus::onMessage);
+            tn.linkManager.setMessageListener(new MessageRouter(tn.consensus, tm));
             cluster.add(tn);
         }
 
@@ -115,7 +121,7 @@ public class E2ETest {
         Thread.sleep(1500); 
 
         for (TestNode tn : cluster) {
-            tn.consensus.start("cmd-initial");
+            tn.consensus.start();
         }
     }
 
@@ -125,7 +131,8 @@ public class E2ETest {
         Map<String, ProcessInfo> servers = new HashMap<>(processInfos);
         servers.remove("client-1"); 
 
-        client = new ClientLibrary(clientInfo, servers, keysToUse, publicKeys);
+        org.web3j.crypto.ECKeyPair ecKeys = CryptoUtils.createECKeyPair();
+        client = new ClientLibrary(clientInfo, servers, keysToUse, publicKeys, ecKeys);
         client.start();
         Thread.sleep(1000); 
     }
@@ -154,7 +161,7 @@ public class E2ETest {
         bootCluster();
         bootClient(false);
 
-        CompletableFuture<Void> future = client.append("E2E_Tx_1");
+        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client.submitTransaction("", 0, "E2E_Tx_1".getBytes());
 
         Assertions.assertDoesNotThrow(() -> {
             future.get(5, TimeUnit.SECONDS);
@@ -176,7 +183,7 @@ public class E2ETest {
 
         bootClient(false);
 
-        CompletableFuture<Void> future = client.append("Crash_Tolerance_Tx");
+        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client.submitTransaction("", 0, "Crash_Tolerance_Tx".getBytes());
 
         Assertions.assertDoesNotThrow(() -> {
             future.get(5, TimeUnit.SECONDS);
@@ -196,7 +203,7 @@ public class E2ETest {
         bootCluster();
         bootClient(false);
 
-        CompletableFuture<Void> future = client.append("Byzantine_Tolerance_Tx");
+        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client.submitTransaction("", 0, "Byzantine_Tolerance_Tx".getBytes());
 
         Assertions.assertDoesNotThrow(() -> {
             future.get(8, TimeUnit.SECONDS);
@@ -226,7 +233,7 @@ public class E2ETest {
         bootCluster();
         bootClient(true);
 
-        CompletableFuture<Void> future = client.append("Hacker_Tx_Fake_Sig");
+        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client.submitTransaction("", 0, "Hacker_Tx_Fake_Sig".getBytes());
 
         Assertions.assertThrows(TimeoutException.class, () -> {
             future.get(2, TimeUnit.SECONDS);

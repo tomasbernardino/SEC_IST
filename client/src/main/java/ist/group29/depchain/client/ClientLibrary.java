@@ -58,6 +58,7 @@ public class ClientLibrary implements MessageListener {
 
         int f = nodes.size() / 3;
         this.quorumSize = f + 1;
+        // Network Layer Keys
         this.linkManager = new LinkManager(self, nodes, myKeys, nodeKeys);
         this.linkManager.setMessageListener(this);
 

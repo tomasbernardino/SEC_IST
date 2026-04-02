@@ -7,14 +7,11 @@ import ist.group29.depchain.client.ClientMessages.Block;
  *
  * This is the bridge between the consensus layer and the application layer
  * (the blockchain service).
- *
- * Implementations must be thread-safe: the consensus layer may call this
- * from its internal event-processing thread.
  */
 public interface DecideListener {
     /**
-     * Called once per decided view, exactly when a valid DECIDE message
-     * carrying a commitQC is received and verified.
+     * Called once per decided view when a valid DECIDE message
+     * carrying a commitQC is received and verified
      */
     void onDecide(Block block, int viewNumber);
 

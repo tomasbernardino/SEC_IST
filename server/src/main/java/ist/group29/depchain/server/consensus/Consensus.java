@@ -35,8 +35,7 @@ import ist.group29.depchain.server.service.TransactionManager;
 /**
  * Basic HotStuff consensus engine - Algorithm 2 of the paper.
  *
- * Messages arrive via MessageRouter which dispatches ConsensusMessages here
- * and Transactions to the Service layer.
+ * Messages arrive via MessageRouter
  */
 public class Consensus {
 
@@ -45,19 +44,19 @@ public class Consensus {
     private static final long INITIAL_TIMEOUT_MS = 4_000;
     private static final long PROPOSAL_RETRY_MS = 1_000;
 
-    private final String selfId;
-    private final List<String> sortedNodeIds;
-    private final int n;
-    private final int f;
-    private final int quorum;
-    private final LinkManager linkManager;
+    protected final String selfId;
+    protected final List<String> sortedNodeIds;
+    protected final int n;
+    protected final int f;
+    protected final int quorum;
+    protected final LinkManager linkManager;
     private final DecideListener decideListener;
     private final TransactionManager transactionManager;
-    private CryptoManager cryptoManager;
+    protected CryptoManager cryptoManager;
 
-    private final Map<ByteString, HotStuffNode> blockStore = new ConcurrentHashMap<>();
+    protected final Map<ByteString, HotStuffNode> blockStore = new ConcurrentHashMap<>();
 
-    private volatile int curView = 1;
+    protected volatile int curView = 1;
     private QuorumCertificate lockedQC = QuorumCertificate.genesisQC();
     private QuorumCertificate prepareQC = QuorumCertificate.genesisQC();
 
@@ -70,9 +69,9 @@ public class Consensus {
     // Stores NewViewMessages for each view
     private final Map<Integer, Map<String, NewViewMessage>> newViewAccumulator = new ConcurrentHashMap<>();
 
-    private volatile HotStuffNode currentProposal = null;
+    protected volatile HotStuffNode currentProposal = null;
 
-    private QuorumCertificate highQC = null;
+    protected QuorumCertificate highQC = null;
 
     private final ScheduledExecutorService pacemaker;
 
@@ -81,6 +80,9 @@ public class Consensus {
     private long timeoutMs = INITIAL_TIMEOUT_MS;
 
     private int lastVotedPrepareView = 0;
+
+    private int lastPreCommitView = 0;
+    private int lastCommitView = 0;
 
     private ByteString lastExecutedNodeHash = ByteString.copyFrom(HotStuffNode.genesis().getNodeHash());
 
@@ -92,8 +94,7 @@ public class Consensus {
 
     public Consensus(String selfId, List<String> allNodeIds,
             LinkManager linkManager, DecideListener decideListener, TransactionManager transactionManager, String keysDir) {
-        this(selfId, allNodeIds, linkManager, decideListener, transactionManager, createDefaultCrypto(selfId, keysDir),
-                createDefaultPacemaker());
+        this(selfId, allNodeIds, linkManager, decideListener, transactionManager, createDefaultCrypto(selfId, keysDir), createDefaultPacemaker());
     }
 
     public Consensus(String selfId, List<String> allNodeIds,
@@ -160,7 +161,7 @@ public class Consensus {
     }
 
     /**
-     * Called by MessageRouter when a ConsensusMessage arrives (already parsed).
+     * Called by MessageRouter when a ConsensusMessage arrives
      */
     public void onMessage(String senderId, ConsensusMessage msg) {
         int msgView = msg.getViewNumber();
@@ -198,9 +199,14 @@ public class Consensus {
         LOG.info("[Consensus] Reached NEW-VIEW quorum for view " + view + "! Proposing...");
 
         // Extract the QC with the highest view number from all NEW-VIEW messages
-        highQC = QuorumCertificate.genesisQC(); // Initialize with genesisQC
+        // Skip QCs with invalid signatures (e.g., corrupted by a Byzantine leader)
+        highQC = QuorumCertificate.genesisQC();
         for (NewViewMessage nv : newViewMessages.values()) {
             QuorumCertificate qc = new QuorumCertificate(nv.getJustify());
+            if (!qc.isValid(cryptoManager)) {
+                LOG.warning("[Consensus] Skipping QC from " + view + " with invalid signature (view " + qc.getViewNumber() + ")");
+                continue;
+            }
             if (qc.getViewNumber() > highQC.getViewNumber()) {
                 highQC = qc;
             }
@@ -249,7 +255,7 @@ public class Consensus {
                 .setPrepare(prepare)
                 .build();
         linkManager.broadcast(EnvelopeFactory.wrap(prepareMsg));
-        
+
         cancelBlockProposalTimer(); // Proposal is out, no need for retry
         onPrepare(selfId, prepare, curView);
         highQC = null;
@@ -312,7 +318,6 @@ public class Consensus {
     /**
      * Handle a VOTE message (covers prepare, pre-commit, and commit votes).
      */
-
     private synchronized void onVote(String senderId, VoteMessage vote, int view) {
         if (!isLeader(view))
             return;
@@ -394,6 +399,8 @@ public class Consensus {
             return;
         if (currentProposal == null)
             return;
+        if (view <= lastPreCommitView)
+            return;
 
         QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
         if (!qc.isValid(cryptoManager)) {
@@ -406,6 +413,7 @@ public class Consensus {
         }
 
         prepareQC = qc;
+        lastPreCommitView = view;
         LOG.info("[Consensus] Accepted PRE-COMMIT in view " + view);
         sendVote(QuorumCertificate.PRE_COMMIT, view, currentProposal.getNodeHash());
     }
@@ -420,6 +428,8 @@ public class Consensus {
             return;
         if (currentProposal == null)
             return;
+        if (view <= lastCommitView)
+            return;
 
         QuorumCertificate qc = new QuorumCertificate(msg.getJustify());
         if (!qc.isValid(cryptoManager)) {
@@ -433,6 +443,7 @@ public class Consensus {
         }
 
         lockedQC = qc;
+        lastCommitView = view;
         LOG.info("[Consensus] Locked on view " + view + " - lockedQC=" + lockedQC);
         sendVote(QuorumCertificate.COMMIT, view, currentProposal.getNodeHash());
     }
@@ -566,7 +577,7 @@ public class Consensus {
         return sortedNodeIds.get((view - 1) % n);
     }
 
-    private boolean isLeader(int view) {
+    protected boolean isLeader(int view) {
         return selfId.equals(leader(view));
     }
 
@@ -585,7 +596,7 @@ public class Consensus {
         }
     }
 
-    private synchronized void sendVote(String phase, int view, byte[] nodeHash) {
+    protected synchronized void sendVote(String phase, int view, byte[] nodeHash) {
         LOG.info("[Consensus] Node " + selfId + " casting vote for phase=" + phase + " view=" + view);
 
         try {
@@ -635,7 +646,7 @@ public class Consensus {
         for (HotStuffNode node : toExecute) {
             LOG.info("[Consensus] DECIDE View " + decidedNode.getViewNumber() + " finalized block with "
                     + node.getBlock().getTransactionsCount() + " txs");
-            // Execute the upcall to Service (application layer) FIXME: the reply of the transaction should be sent in the decider after execution
+            // Execute the upcall to Service
             decideListener.onDecide(node.getBlock(), node.getViewNumber());
         }
         lastExecutedNodeHash = ByteString.copyFrom(decidedNode.getNodeHash());
