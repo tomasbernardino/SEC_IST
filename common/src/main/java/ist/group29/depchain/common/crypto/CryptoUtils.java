@@ -176,6 +176,13 @@ public final class CryptoUtils {
         return Sign.signedMessageToKey(hash, signature.toSignatureData());
     }
 
+    /** Normalize an Ethereum address: strip 0x prefix if present, lowercase. */
+    public static String normalizeAddress(String address) {
+        if (address == null) return null;
+        String lower = address.toLowerCase();
+        return lower.startsWith("0x") ? lower.substring(2) : lower;
+    }
+
     /**
      * Verify that the recovered address from an ECDSA signature matches the
      * expected sender
@@ -184,10 +191,7 @@ public final class CryptoUtils {
         try {
             BigInteger recoveredKey = ecRecover(signature, parts);
             String recoveredAddress = Keys.getAddress(recoveredKey);
-            String normalizedExpected = expectedAddress.startsWith("0x")
-                    ? expectedAddress.substring(2).toLowerCase()
-                    : expectedAddress.toLowerCase();
-            return recoveredAddress.equalsIgnoreCase(normalizedExpected);
+            return recoveredAddress.equalsIgnoreCase(normalizeAddress(expectedAddress));
         } catch (SignatureException e) {
             return false;
         }

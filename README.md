@@ -35,7 +35,7 @@ Below is an example of parameters for 4 nodes and 2 clients:
 ./setup_system.sh 4 2
 ```
 
-**Note:** This command automatically extracts the compiled `ISTCoin` EVM bytecode and builds a `setup_config/` directory containing all configured network and blockchain identities. The generated nodes will have ids `[node-0, ..., node-3]` and clients `[client-0, client-1]`.
+**Note:** This command automatically extracts the compiled `ISTCoin` EVM runtime bytecode and builds a `setup_config/` directory containing all configured network and blockchain identities. The generated nodes will have ids `[node-0, ..., node-3]` and clients `[client-0, client-1]`.
 
 ---
 

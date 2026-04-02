@@ -1,13 +1,14 @@
 package ist.group29.depchain.server.service;
 
-import ist.group29.depchain.client.ClientMessages.Transaction;
-import ist.group29.depchain.common.crypto.CryptoUtils;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.logging.Logger;
-import java.util.List;
+
+import ist.group29.depchain.client.ClientMessages.Transaction;
+import ist.group29.depchain.common.crypto.CryptoUtils;
 /**
  * Advanced Mempool that organizes transactions by sender and nonce.
  * Ensures strict nonce ordering and prevents duplicate hashes or nonce collisions.
@@ -29,7 +30,7 @@ public class Mempool {
             return false;
         }
 
-        String sender = tx.getFrom().toLowerCase();
+        String sender = CryptoUtils.normalizeAddress(tx.getFrom());
         long nonce = tx.getNonce();
 
         TreeMap<Long, Transaction> senderTxs = txsBySender.computeIfAbsent(sender, k -> new TreeMap<>());
@@ -65,7 +66,7 @@ public class Mempool {
             String hash = getHash(tx);
             seenHashes.remove(hash);
             
-            String sender = tx.getFrom().toLowerCase();
+            String sender = CryptoUtils.normalizeAddress(tx.getFrom());
             TreeMap<Long, Transaction> senderTxs = txsBySender.get(sender);
             if (senderTxs != null) {
                 senderTxs.remove(tx.getNonce());

@@ -41,6 +41,18 @@ message TransactionResponse {
     string error_message     = 6;  // optional human-readable detail about failures
 }
 
+message NativeBalanceRequest {
+    string request_id = 1; // Client-generated ID so replies can be grouped across nodes
+    string address    = 2; // Address whose native DepCoin balance is being queried
+}
+
+message NativeBalanceResponse {
+    string request_id   = 1; // Echoes the originating request for client-side matching
+    string address      = 2;
+    string balance      = 3; // String form avoids uint64 limits for account balances
+    uint64 block_number = 4; // Lets the client keep the freshest answer among f+1 replies
+}
+
 message Block {
     uint64 block_number      = 1;
     string block_hash        = 2;  // Hash of the transactions

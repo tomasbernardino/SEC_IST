@@ -45,8 +45,10 @@ message AckMessage {
 // Application-level envelope for multiplexing message types over the wire.
 message Envelope {
     oneof payload {
-        ConsensusMessage     consensus            = 1;
-        Transaction          transaction           = 2;
-        TransactionResponse  transaction_response  = 3;
+        ConsensusMessage      consensus               = 1;
+        Transaction           transaction             = 2;
+        TransactionResponse   transaction_response    = 3;
+        NativeBalanceRequest  native_balance_request  = 4;
+        NativeBalanceResponse native_balance_response = 5;
     }
 }

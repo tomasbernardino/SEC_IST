@@ -2,19 +2,24 @@ package ist.group29.depchain.server.service;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
 import com.google.protobuf.ByteString;
 
 import ist.group29.depchain.client.ClientMessages.Block;
+import ist.group29.depchain.client.ClientMessages.NativeBalanceRequest;
+import ist.group29.depchain.client.ClientMessages.NativeBalanceResponse;
 import ist.group29.depchain.client.ClientMessages.Transaction;
 import ist.group29.depchain.client.ClientMessages.TransactionResponse;
 import ist.group29.depchain.client.ClientMessages.TransactionStatus;
 import ist.group29.depchain.common.crypto.ClientSignature;
 import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.common.network.EnvelopeFactory;
 import ist.group29.depchain.common.network.LinkManager;
 import ist.group29.depchain.network.NetworkMessages.Envelope;
 import ist.group29.depchain.server.service.account.BlockchainAccount;
@@ -23,7 +28,7 @@ import ist.group29.depchain.server.service.account.EOA;
 public class TransactionManager {
 
     private static final Logger LOG = Logger.getLogger(TransactionManager.class.getName());
-    private static final long BLOCK_GAS_LIMIT = 100000;
+    private static final long BLOCK_GAS_LIMIT = 500000;
 
     private final BlockchainState state;
     private final Mempool mempool = new Mempool();
@@ -46,23 +51,24 @@ public class TransactionManager {
         String previousHash = state.getBlockHash();
         List<Transaction> candidateTxs = new ArrayList<>();
         long currentBlockGas = 0;
-        
+        Set<String> senders = mempool.getSenders();
+
         // Prioritized Picking: We maintain a "frontier" of the next executable transaction for each sender.
         // We pick the highest-fee transaction from the frontier, add it, and then advance that sender's frontier.
         
         // Initial frontier (one tx per sender)
-        java.util.Map<String, Long> expectedNonces = new java.util.HashMap<>();
-        for (String sender : mempool.getSenders()) {
+        Map<String, Long> expectedNonces = new HashMap<>();
+        for (String sender : senders) {
             BlockchainAccount acc = state.getAccount(sender);
             long nextNonce = (acc instanceof EOA eoa) ? eoa.getNonce() : 0;
             expectedNonces.put(sender, nextNonce);
         }
-        // 
+
         while (true) {
             Transaction bestTx = null;
             String bestSender = null;
 
-            for (String sender : mempool.getSenders()) {
+            for (String sender : senders) {
                 long nonce = expectedNonces.get(sender);
                 Transaction tx = mempool.getTransaction(sender, nonce);
                 
@@ -82,14 +88,10 @@ public class TransactionManager {
                 currentBlockGas += bestTx.getGasLimit();
                 expectedNonces.put(bestSender, bestTx.getNonce() + 1);
             } else {
-                // If the most expensive tx doesn't fit, we stop picking to keep the order logic simple
-                // FIXME: Optimally, we could try smaller txs, but Ethereum usually fills greedily
+                // The block cannot fit the highest-fee transaction
                 break;
             }
         }
-        
-        // Order by highest gas price
-        candidateTxs.sort((t1, t2) -> Long.compare(t2.getGasPrice(), t1.getGasPrice()));
 
         // Create block without blockHash to get a stable byte array
         Block.Builder builder = Block.newBuilder()
@@ -106,9 +108,18 @@ public class TransactionManager {
     }
 
     public boolean validateBlock(Block block) {
-        if (block == null || block.getTransactionsCount() == 0)
+        if (block == null)
             return false;
+
+        long blockGas = 0;
+
         for (Transaction tx : block.getTransactionsList()) {
+            blockGas += tx.getGasLimit();
+            if (blockGas > BLOCK_GAS_LIMIT) {
+                LOG.warning("[TransactionManager] Block exceeds gas limit: " + blockGas + " > " + BLOCK_GAS_LIMIT);
+                return false;
+            }
+
             if (validateIncomingTx(tx) != null) {
                 LOG.warning("[TransactionManager] Block contains invalid transaction from " + tx.getFrom());
                 return false;
@@ -151,6 +162,23 @@ public class TransactionManager {
         return txHashToSenderId.remove(txHash);
     }
 
+    public void handleNativeBalanceRequest(String senderId, NativeBalanceRequest request) {
+
+        String senderAddr = CryptoUtils.normalizeAddress(request.getAddress());
+        BlockchainAccount account = state.getAccount(senderAddr);
+        BigInteger balance = account != null ? account.getBalance() : BigInteger.ZERO;
+
+        NativeBalanceResponse response = NativeBalanceResponse.newBuilder()
+                .setRequestId(request.getRequestId())
+                .setAddress("0x" + senderAddr)
+                .setBalance(balance.toString())
+                .setBlockNumber(state.getBlockNumber())
+                .build();
+
+        linkManager.send(senderId, EnvelopeFactory.wrap(response));
+    }
+
+
     /**
      * Removes committed transactions from the mempool.
      */
@@ -187,7 +215,7 @@ public class TransactionManager {
             return buildResponse(tx, TransactionStatus.FAILURE, msg);
         }
 
-        String senderAddr = tx.getFrom().replace("0x", "").toLowerCase();
+        String senderAddr = CryptoUtils.normalizeAddress(tx.getFrom());
         BlockchainAccount account = state.getAccount(senderAddr);
 
         if (account == null) {
@@ -217,6 +245,17 @@ public class TransactionManager {
             String msg = "insufficient funds (cost=" + totalCost + ", balance=" + eoa.getBalance() + ")";
             LOG.warning("[TransactionManager] Transaction rejected: " + msg);
             return buildResponse(tx, TransactionStatus.INSUFFICIENT_FUNDS, msg);
+        }
+
+        // reject unknown "to" addresses for native transfers 
+        if (!tx.getTo().isEmpty()) {
+            String destinationAddr = CryptoUtils.normalizeAddress(tx.getTo());
+            BlockchainAccount destAcc = state.getAccount(destinationAddr);
+            if (destAcc == null) {
+                String msg = "recipient account " + destinationAddr + " does not exist";
+                LOG.warning("[TransactionManager] Transaction rejected: " + msg);
+                return buildResponse(tx, TransactionStatus.FAILURE, msg);
+            }
         }
 
         // Signature check
