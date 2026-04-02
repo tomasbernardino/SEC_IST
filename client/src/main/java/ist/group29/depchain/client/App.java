@@ -22,6 +22,7 @@ import ist.group29.depchain.client.ClientMessages.NativeBalanceResponse;
 import ist.group29.depchain.client.ClientMessages.TransactionResponse;
 import ist.group29.depchain.client.ClientMessages.TransactionStatus;
 import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.common.keys.AddressConfigReader;
 import ist.group29.depchain.common.keys.ConfigReader;
 import ist.group29.depchain.common.keys.KeyStoreManager;
 import ist.group29.depchain.common.network.ProcessInfo;
@@ -45,6 +46,7 @@ public class App {
 
         // Load network and keys
         Map<String, ProcessInfo> nodes = ConfigReader.parseHosts(configPath);
+        Map<String, String> knownAddresses = loadKnownAddresses(configPath, keysDir);
 
         // Load Client Network Authentication KeyPair
         Path myKeyPath = keysDir.resolve(clientId + ".p12");
@@ -81,6 +83,7 @@ public class App {
         // Initialize the module
         ClientLibrary clientLibrary = new ClientLibrary(self, nodes, identityKeyPair, nodeKeys, blockchainId);
         clientLibrary.start();
+        String myAddressAlias = findAliasForAddress(knownAddresses, clientLibrary.getMyAddress());
 
         System.out.println("\nDepChain Client '" + clientId + "' ready.");
         String istCoinAddress = "0x1111111111111111111111111111111111111111";
@@ -103,11 +106,8 @@ public class App {
                     CompletableFuture<TransactionResponse> future = null;
 
                     if (choice.equals("1")) {
-                        System.out.print("Address to check [" + clientLibrary.getMyAddress() + "]: ");
-                        String address = scanner.nextLine().trim();
-                        if (address.isEmpty()) {
-                            address = clientLibrary.getMyAddress();
-                        }
+                        System.out.print("Address to check [" + formatDefaultAddress(myAddressAlias, clientLibrary.getMyAddress()) + "]: ");
+                        String address = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, clientLibrary.getMyAddress());
 
                         NativeBalanceResponse balanceResponse = clientLibrary.getNativeBalance(address).get();
                         System.out.println("--- Native Balance ---");
@@ -119,7 +119,7 @@ public class App {
                     } else if (choice.equals("2")) {
                         // Native Transfer
                         System.out.print("To Address: ");
-                        String to = scanner.nextLine().trim();
+                        String to = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                         System.out.print("Amount (DepCoin units): ");
                         long amount = Long.parseLong(scanner.nextLine().trim());
                         long[] gas = promptGas(scanner, true);
@@ -144,55 +144,52 @@ public class App {
 
                         switch (subChoice) {
                             case "1": // balanceOf(address)
-                                System.out.print("Address to check [" + clientLibrary.getMyAddress() + "]: ");
-                                String addr = scanner.nextLine().trim();
-                                if (addr.isEmpty()) {
-                                    addr = clientLibrary.getMyAddress();
-                                }
+                                System.out.print("Address to check [" + formatDefaultAddress(myAddressAlias, clientLibrary.getMyAddress()) + "]: ");
+                                String addr = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, clientLibrary.getMyAddress());
                                 dataHex = "70a08231" + encodeAddress(addr);
                                 break;
                             case "2": // transfer(address,uint256)
                                 System.out.print("Recipient: ");
-                                String recipient = scanner.nextLine().trim();
+                                String recipient = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 System.out.print("Amount: ");
                                 long val = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "a9059cbb" + encodeAddress(recipient) + encodeUint(val);
                                 break;
                             case "3": // transferFrom(address,address,uint256)
                                 System.out.print("From (owner): ");
-                                String from = scanner.nextLine().trim();
+                                String from = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 System.out.print("To (recipient): ");
-                                String to = scanner.nextLine().trim();
+                                String to = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 System.out.print("Amount: ");
                                 long tfVal = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "23b872dd" + encodeAddress(from) + encodeAddress(to) + encodeUint(tfVal);
                                 break;
                             case "4": // approve(address,uint256)
                                 System.out.print("Spender: ");
-                                String spender = scanner.nextLine().trim();
+                                String spender = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 System.out.print("Amount: ");
                                 long allowanceVal = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "095ea7b3" + encodeAddress(spender) + encodeUint(allowanceVal);
                                 break;
                             case "5": // increaseAllowance(address,uint256)
                                 System.out.print("Spender: ");
-                                String sInc = scanner.nextLine().trim();
+                                String sInc = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 System.out.print("Added Value: ");
                                 long incVal = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "39509351" + encodeAddress(sInc) + encodeUint(incVal);
                                 break;
                             case "6": // decreaseAllowance(address,uint256)
                                 System.out.print("Spender (decrease): ");
-                                String sDec = scanner.nextLine().trim();
+                                String sDec = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 System.out.print("Subtracted Value: ");
                                 long decVal = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "a457c2d7" + encodeAddress(sDec) + encodeUint(decVal);
                                 break;
                             case "7": // allowance(address,address)
                                 System.out.print("Owner: ");
-                                String owner = scanner.nextLine().trim();
+                                String owner = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 System.out.print("Spender: ");
-                                String spenderQuery = scanner.nextLine().trim();
+                                String spenderQuery = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 dataHex = "dd62ed3e" + encodeAddress(owner) + encodeAddress(spenderQuery);
                                 break;
                             default:
@@ -208,7 +205,7 @@ public class App {
                     } else if (choice.equals("4")) {
                         // Custom Contract Call
                         System.out.print("Contract Address: ");
-                        String contract = scanner.nextLine().trim();
+                        String contract = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                         System.out.print("Call Data (without 0x): ");
                         String hexData = scanner.nextLine().trim();
                         long[] gas = promptGas(scanner, false);
@@ -290,6 +287,48 @@ public class App {
         }
 
         return new long[]{gasPrice, gasLimit};
+    }
+
+    private static Map<String, String> loadKnownAddresses(Path hostsConfigPath, Path keysDir) {
+        Path[] candidates = new Path[] {
+                hostsConfigPath.getParent() != null
+                        ? hostsConfigPath.getParent().resolve("addresses.config")
+                        : Path.of("addresses.config"),
+                keysDir.getParent() != null
+                        ? keysDir.getParent().resolve("addresses.config")
+                        : Path.of("addresses.config")
+        };
+
+        for (Path candidate : candidates) {
+            try {
+                return AddressConfigReader.parseAddresses(candidate);
+            } catch (Exception ignored) {
+            }
+        }
+
+        return Map.of();
+    }
+
+    private static String resolveAddressInput(String input, Map<String, String> knownAddresses, String defaultAddress) {
+        String trimmed = input == null ? "" : input.trim();
+        if (trimmed.isEmpty()) {
+            return defaultAddress == null ? "" : defaultAddress;
+        }
+        return knownAddresses.getOrDefault(trimmed, trimmed);
+    }
+
+    private static String findAliasForAddress(Map<String, String> knownAddresses, String address) {
+        String normalized = normalizeHex(address);
+        for (Map.Entry<String, String> entry : knownAddresses.entrySet()) {
+            if (normalizeHex(entry.getValue()).equalsIgnoreCase(normalized)) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
+    private static String formatDefaultAddress(String alias, String address) {
+        return alias != null ? alias : address;
     }
 
     private static String encodeAddress(String addr) {

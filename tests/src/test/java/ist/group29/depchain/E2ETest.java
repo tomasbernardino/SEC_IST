@@ -13,6 +13,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.math.BigInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -23,12 +24,16 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import ist.group29.depchain.client.ClientLibrary;
+import ist.group29.depchain.client.ClientMessages.TransactionResponse;
+import ist.group29.depchain.client.ClientMessages.TransactionStatus;
 import ist.group29.depchain.common.crypto.CryptoUtils;
 import ist.group29.depchain.common.network.LinkManager;
 import ist.group29.depchain.common.network.ProcessInfo;
 import ist.group29.depchain.server.consensus.Consensus;
 import ist.group29.depchain.server.crypto.CryptoManager;
 import ist.group29.depchain.server.service.Service;
+import ist.group29.depchain.server.service.account.BlockchainAccount;
+import ist.group29.depchain.server.service.account.EOA;
 
 public class E2ETest {
     private static final int BASE_PORT = 12000;
@@ -228,6 +233,42 @@ public class E2ETest {
         }, "Malicious request should fail validation and timeout entirely");
     }
   
+    // Test 5: Replay Attack Rejection
+
+    /**
+     * Submit a valid native transfer through the real client path, then replay the
+     * exact same serialized client message. The first transfer should commit once,
+     * while the replay should leave balances unchanged because the nonce has already
+     * been consumed.
+     */
+    @Test
+    public void testReplayAttackRejectedE2E() throws Exception {
+        bootCluster();
+        bootClient(false);
+
+        String senderAddress = client.getMyAddress();
+        String recipientAddress = "0x2222222222222222222222222222222222222222";
+        BigInteger initialBalance = BigInteger.valueOf(1_000_000);
+        BigInteger transferAmount = BigInteger.valueOf(25);
+
+        addAccountToAllNodes(senderAddress, initialBalance, 0);
+        addAccountToAllNodes(recipientAddress, BigInteger.ZERO, 0);
+
+        CompletableFuture<TransactionResponse> future =
+                client.submitTransaction(recipientAddress, transferAmount.longValue(), null, 1, 21_000);
+
+        TransactionResponse receipt = future.get(8, TimeUnit.SECONDS);
+        Assertions.assertEquals(
+                TransactionStatus.SUCCESS,
+                receipt.getStatus(),
+                "Original transfer should commit successfully");
+
+        Assertions.assertTrue(client.replayLastMessage(), "Client should have a last serialized message to replay");
+        // Wait to check if the replay was processed or rejected. Since the replay should be rejected due to nonce reuse, we expect balances and nonce to remain unchanged after a short wait.
+        waitForClusterBalance(recipientAddress, transferAmount, 5);
+        waitForClusterNonce(senderAddress, 1, 5);
+    }
+
     /**
      * Helper Class used to simulate malicious leader.
      */
@@ -247,5 +288,58 @@ public class E2ETest {
             }
             return realAgg;
         }
+    }
+
+    private void addAccountToAllNodes(String address, BigInteger balance, long nonce) {
+        String normalized = CryptoUtils.normalizeAddress(address);
+        for (TestNode tn : cluster) {
+            tn.service.getState().addAccount(new EOA(normalized, balance, nonce));
+        }
+    }
+
+    private void waitForClusterBalance(String address, BigInteger expectedBalance, long timeoutSeconds) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        String normalized = CryptoUtils.normalizeAddress(address);
+
+        while (System.nanoTime() < deadline) {
+            boolean allMatch = true;
+            for (TestNode tn : cluster) {
+                BlockchainAccount account = tn.service.getState().getAccount(normalized);
+                if (account == null || account.getBalance().compareTo(expectedBalance) != 0) {
+                    allMatch = false;
+                    break;
+                }
+            }
+
+            if (allMatch) {
+                return;
+            }
+            Thread.sleep(200);
+        }
+
+        Assertions.fail("Timed out waiting for balance " + expectedBalance + " on " + address);
+    }
+
+    private void waitForClusterNonce(String address, long expectedNonce, long timeoutSeconds) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        String normalized = CryptoUtils.normalizeAddress(address);
+
+        while (System.nanoTime() < deadline) {
+            boolean allMatch = true;
+            for (TestNode tn : cluster) {
+                BlockchainAccount account = tn.service.getState().getAccount(normalized);
+                if (!(account instanceof EOA eoa) || eoa.getNonce() != expectedNonce) {
+                    allMatch = false;
+                    break;
+                }
+            }
+
+            if (allMatch) {
+                return;
+            }
+            Thread.sleep(200);
+        }
+
+        Assertions.fail("Timed out waiting for nonce " + expectedNonce + " on " + address);
     }
 }

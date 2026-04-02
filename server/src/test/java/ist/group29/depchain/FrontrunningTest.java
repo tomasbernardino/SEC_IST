@@ -28,7 +28,9 @@ import com.google.protobuf.ByteString;
 import ist.group29.depchain.client.ClientMessages;
 import ist.group29.depchain.common.crypto.ClientSignature;
 import ist.group29.depchain.common.crypto.CryptoUtils;
+import ist.group29.depchain.common.keys.ConfigReader;
 import ist.group29.depchain.common.network.LinkManager;
+import ist.group29.depchain.common.network.ProcessInfo;
 import ist.group29.depchain.common.util.SystemSetupTool;
 import ist.group29.depchain.network.ConsensusMessages;
 import ist.group29.depchain.network.NetworkMessages.Envelope;
@@ -58,6 +60,8 @@ public class FrontrunningTest {
     void setup() throws Exception {
         ensureIstCoinBytecode();
 
+        Path repoRoot = repoRoot();
+
         Path keysDir = tempDir.resolve("keys");
         Path storageDir = tempDir.resolve("storage");
         Path outputDir = tempDir.resolve("output");
@@ -65,15 +69,12 @@ public class FrontrunningTest {
         Files.createDirectories(storageDir);
         Files.createDirectories(outputDir);
 
-        Path hostsConfig = tempDir.resolve("hosts.config");
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < NR_NODES; i++) {
-            sb.append("node-").append(i).append(" 127.0.0.1 ").append(8000 + i).append("\n");
-        }
-        Files.writeString(hostsConfig, sb.toString());
+        Path hostsConfig = repoRoot.resolve("hosts.config");
+        Map<String, ProcessInfo> configuredNodes = ConfigReader.parseHosts(hostsConfig);
+        List<String> nodeIds = new ArrayList<>(configuredNodes.keySet());
 
         SystemSetupTool.main(new String[] {
-                String.valueOf(NR_NODES),
+                String.valueOf(nodeIds.size()),
                 "2",
                 keysDir.toString(),
                 storageDir.toString(),
@@ -87,11 +88,6 @@ public class FrontrunningTest {
         bobKeys = CryptoUtils.loadECKeyPair(keysDir.resolve("client-1.key"));
         aliceAddr = CryptoUtils.getAddress(aliceKeys).toLowerCase();
         bobAddr = CryptoUtils.getAddress(bobKeys).toLowerCase();
-
-        List<String> nodeIds = new ArrayList<>();
-        for (int i = 0; i < NR_NODES; i++) {
-            nodeIds.add("node-" + i);
-        }
 
         Path genesisPath = storageDir.resolve("genesis.json");
         for (String id : nodeIds) {
@@ -121,30 +117,20 @@ public class FrontrunningTest {
     }
 
     private void ensureIstCoinBytecode() throws Exception {
+        Path repoRoot = repoRoot();
+        Path bytecodePath = repoRoot.resolve("server/src/main/solidity/bin/ISTCoin.bytecode");
+        if (!Files.exists(bytecodePath) || Files.size(bytecodePath) == 0) {
+            fail("ISTCoin.bytecode not found at " + bytecodePath
+                    + ". Generate or commit the runtime bytecode before running FrontrunningTest.");
+        }
+    }
+
+    private Path repoRoot() {
         Path repoRoot = Path.of("").toAbsolutePath().normalize();
         if (repoRoot.getFileName() != null && repoRoot.getFileName().toString().equals("server")) {
             repoRoot = repoRoot.getParent();
         }
-
-        Path bytecodePath = repoRoot.resolve("server/src/main/solidity/bin/ISTCoin.bytecode");
-        if (Files.exists(bytecodePath) && Files.size(bytecodePath) > 0) {
-            return;
-        }
-
-        Path scriptPath = repoRoot.resolve("compile_contract.sh");
-        if (!Files.exists(scriptPath)) {
-            fail("compile_contract.sh not found at " + scriptPath);
-        }
-
-        Process proc = new ProcessBuilder("bash", scriptPath.toString())
-                .directory(repoRoot.toFile())
-                .redirectErrorStream(true)
-                .start();
-        String output = new String(proc.getInputStream().readAllBytes());
-        proc.waitFor();
-        if (!Files.exists(bytecodePath) || Files.size(bytecodePath) == 0) {
-            fail("Failed to generate ISTCoin.bytecode via compile_contract.sh:\n" + output);
-        }
+        return repoRoot;
     }
 
     @Test
