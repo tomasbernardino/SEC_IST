@@ -8,7 +8,9 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Scanner;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Handler;
 import java.util.logging.Level;
@@ -26,6 +28,8 @@ import ist.group29.depchain.common.keys.KeyStoreManager;
 import ist.group29.depchain.common.network.ProcessInfo;
 
 public class App {
+    private static final Queue<String> pendingNotifications = new ConcurrentLinkedQueue<>();
+
     public static void main(String[] args) throws Exception {
 
         Logger rootLogger = Logger.getLogger("");
@@ -89,6 +93,7 @@ public class App {
 
         try (Scanner scanner = new Scanner(System.in)) {
             while (true) {
+                drainNotifications();
                 System.out.println("\n=== Main Menu ===");
                 System.out.println("1. Check DepCoin Balance");
                 System.out.println("2. DepCoin Transfer");
@@ -103,6 +108,7 @@ public class App {
 
                 try {
                     CompletableFuture<TransactionResponse> future = null;
+                    String submissionLabel = null;
 
                     if (choice.equals("1")) {
                         System.out.print("Address to check [" + formatDefaultAddress(myAddressAlias, clientLibrary.getMyAddress()) + "]: ");
@@ -123,6 +129,7 @@ public class App {
                         long amount = Long.parseLong(scanner.nextLine().trim());
                         long[] gas = promptGas(scanner, true);
                         future = clientLibrary.submitTransaction(to, amount, null, gas[0], gas[1]);
+                        submissionLabel = "DepCoin transfer to " + to + " (value=" + amount + ")";
 
                     } else if (choice.equals("3")) {
                         // IST Coin Operations
@@ -153,6 +160,7 @@ public class App {
                                 System.out.print("Amount: ");
                                 long val = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "a9059cbb" + encodeAddress(recipient) + encodeUint(val);
+                                submissionLabel = "ISTCoin transfer to " + recipient + " (value=" + val + ")";
                                 break;
                             case "3": // transferFrom(address,address,uint256)
                                 System.out.print("From (owner): ");
@@ -162,6 +170,7 @@ public class App {
                                 System.out.print("Amount: ");
                                 long tfVal = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "23b872dd" + encodeAddress(from) + encodeAddress(to) + encodeUint(tfVal);
+                                submissionLabel = "ISTCoin transferFrom " + from + " to " + to + " (value=" + tfVal + ")";
                                 break;
                             case "4": // approve(address,uint256)
                                 System.out.print("Spender: ");
@@ -169,6 +178,7 @@ public class App {
                                 System.out.print("Amount: ");
                                 long allowanceVal = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "095ea7b3" + encodeAddress(spender) + encodeUint(allowanceVal);
+                                submissionLabel = "ISTCoin approve for " + spender + " (value=" + allowanceVal + ")";
                                 break;
                             case "5": // increaseAllowance(address,uint256)
                                 System.out.print("Spender: ");
@@ -176,6 +186,7 @@ public class App {
                                 System.out.print("Added Value: ");
                                 long incVal = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "39509351" + encodeAddress(sInc) + encodeUint(incVal);
+                                submissionLabel = "ISTCoin increaseAllowance for " + sInc + " (delta=" + incVal + ")";
                                 break;
                             case "6": // decreaseAllowance(address,uint256)
                                 System.out.print("Spender (decrease): ");
@@ -183,6 +194,7 @@ public class App {
                                 System.out.print("Subtracted Value: ");
                                 long decVal = Long.parseLong(scanner.nextLine().trim());
                                 dataHex = "a457c2d7" + encodeAddress(sDec) + encodeUint(decVal);
+                                submissionLabel = "ISTCoin decreaseAllowance for " + sDec + " (delta=" + decVal + ")";
                                 break;
                             case "7": // allowance(address,address)
                                 System.out.print("Owner: ");
@@ -190,6 +202,7 @@ public class App {
                                 System.out.print("Spender: ");
                                 String spenderQuery = resolveAddressInput(scanner.nextLine().trim(), knownAddresses, null);
                                 dataHex = "dd62ed3e" + encodeAddress(owner) + encodeAddress(spenderQuery);
+                                submissionLabel = "ISTCoin allowance query owner=" + owner + ", spender=" + spenderQuery;
                                 break;
                             default:
                                 System.out.println("Invalid choice.");
@@ -209,6 +222,7 @@ public class App {
                         String hexData = scanner.nextLine().trim();
                         long[] gas = promptGas(scanner, false);
                         future = clientLibrary.submitTransaction(contract, 0, CryptoUtils.hexToBytes(hexData), gas[0], gas[1]);
+                        submissionLabel = "Custom contract call to " + (contract.isEmpty() ? "<empty>" : contract);
                     } else if (choice.equals("5")) {
                         if (clientLibrary.replayLastMessage()) {
                             System.out.println("Last serialized message replayed exactly as it was originally sent.");
@@ -223,7 +237,8 @@ public class App {
 
                     if (future != null) {
                         System.out.println("Transaction submitted. Confirmation will be printed asynchronously when the receipt arrives.");
-                        future.whenComplete((receipt, error) -> printAsyncReceipt(receipt, error));
+                        String label = submissionLabel != null ? submissionLabel : "Submitted transaction";
+                        future.whenComplete((receipt, error) -> enqueueAsyncReceipt(label, receipt, error));
                     }
 
                 } catch (Exception e) {
@@ -310,40 +325,58 @@ public class App {
         return String.format("%64s", hex).replace(' ', '0').toLowerCase();
     }
 
-    private static void printAsyncReceipt(TransactionResponse receipt, Throwable error) {
-        System.out.println();
+    private static void enqueueAsyncReceipt(String label, TransactionResponse receipt, Throwable error) {
+        pendingNotifications.add(formatAsyncReceipt(label, receipt, error));
+    }
+
+    private static void drainNotifications() {
+        String notification;
+        while ((notification = pendingNotifications.poll()) != null) {
+            System.out.println();
+            System.out.print(notification);
+            if (!notification.endsWith("\n")) {
+                System.out.println();
+            }
+        }
+    }
+
+    private static String formatAsyncReceipt(String label, TransactionResponse receipt, Throwable error) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Receipt for ").append(label).append('\n');
         if (error != null) {
             Throwable cause = error.getCause() != null ? error.getCause() : error;
-            System.err.println("--- Transaction Confirmation Failed ---");
-            System.err.println("Error: " + cause.getClass().getSimpleName() + " - " + cause.getMessage());
-            return;
+            sb.append("--- Transaction Confirmation Failed ---\n");
+            sb.append("Error: ")
+                    .append(cause.getClass().getSimpleName())
+                    .append(" - ")
+                    .append(cause.getMessage());
+            return sb.toString();
         }
 
         if (receipt.getStatus() == TransactionStatus.SUCCESS) {
-            System.out.println("--- Transaction Successful ---");
-            System.out.println("Block: " + receipt.getBlockNumber());
-            System.out.println("Gas Used: " + receipt.getGasUsed());
+            sb.append("--- Transaction Successful ---\n");
+            sb.append("Block: ").append(receipt.getBlockNumber()).append('\n');
+            sb.append("Gas Used: ").append(receipt.getGasUsed()).append('\n');
 
             if (!receipt.getReturnData().isEmpty()) {
                 byte[] bytes = receipt.getReturnData().toByteArray();
                 String returnHex = CryptoUtils.bytesToHex(bytes);
-                System.out.println("Return Data (Hex): 0x" + returnHex);
+                sb.append("Return Data (Hex): 0x").append(returnHex).append('\n');
                 if (bytes.length == 32) {
                     java.math.BigInteger bi = new java.math.BigInteger(1, bytes);
-                    System.out.println("Return Data (Uint256): " + bi);
+                    sb.append("Return Data (Uint256): ").append(bi);
                 } else {
-                    System.out.println("Return Data (Length: " + bytes.length + " bytes)");
+                    sb.append("Return Data (Length: ").append(bytes.length).append(" bytes)");
                 }
             } else {
-                System.out.println("Return Data: None");
+                sb.append("Return Data: None");
             }
         } else {
-            System.err.println("--- Transaction Failed ---");
-            System.err.println("Status: " + receipt.getStatus());
-            System.err.println("Error: " + receipt.getErrorMessage());
+            sb.append("--- Transaction Failed ---\n");
+            sb.append("Status: ").append(receipt.getStatus()).append('\n');
+            sb.append("Error: ").append(receipt.getErrorMessage());
         }
-        System.out.print("Select an option: ");
-        System.out.flush();
+        return sb.toString();
     }
 
 
