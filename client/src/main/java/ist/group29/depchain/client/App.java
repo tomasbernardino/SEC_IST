@@ -10,8 +10,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -224,44 +222,10 @@ public class App {
                     }
 
                     if (future != null) {
-                        System.out.println("Transaction submitted. Waiting for confirmation...");
-                        TransactionResponse receipt = future.get();
-
-                        if (receipt.getStatus() == TransactionStatus.SUCCESS) {
-                            System.out.println("--- Transaction Successful ---");
-                            System.out.println("Block: " + receipt.getBlockNumber());
-                            System.out.println("Gas Used: " + receipt.getGasUsed());
-
-                            if (!receipt.getReturnData().isEmpty()) {
-                                byte[] bytes = receipt.getReturnData().toByteArray();
-                                String returnHex = CryptoUtils.bytesToHex(bytes);
-                                System.out.println("Return Data (Hex): 0x" + returnHex);
-                                // Try parsing as uint256 if return length is 32 bytes
-                                if (bytes.length == 32) {
-                                    java.math.BigInteger bi = new java.math.BigInteger(1, bytes);
-                                    System.out.println("Return Data (Uint256): " + bi.toString());
-                                } else if (bytes.length > 0) {
-                                    // For other lengths, just show hex representation
-                                    System.out.println("Return Data (Length: " + bytes.length + " bytes)");
-                                }
-                            } else {
-                                System.out.println("Return Data: None"); 
-                            }
-                        } else {
-                            System.err.println("--- Transaction Failed ---");
-                            System.err.println("Status: " + receipt.getStatus());
-                            System.err.println("Error: " + receipt.getErrorMessage());
-                        }
+                        System.out.println("Transaction submitted. Confirmation will be printed asynchronously when the receipt arrives.");
+                        future.whenComplete((receipt, error) -> printAsyncReceipt(receipt, error));
                     }
 
-                } catch (ExecutionException e) {
-                    // ExecutionException wraps the actual exception from the CompletableFuture
-                    Throwable cause = e.getCause();
-                    if (cause instanceof TimeoutException) {
-                        System.err.println("Execution failed: Request timed out waiting for f+1 responses from nodes.");
-                    } else {
-                        System.err.println("Execution failed: " + (cause != null ? cause.getClass().getSimpleName() : "ExecutionException") + " - " + (cause != null ? cause.getMessage() : e.getMessage()));
-                    }
                 } catch (Exception e) {
                     System.err.println("Execution failed: " + e.getClass().getSimpleName() + " - " + e.getMessage());
                 }
@@ -344,6 +308,42 @@ public class App {
     private static String encodeUint(long val) {
         String hex = Long.toHexString(val);
         return String.format("%64s", hex).replace(' ', '0').toLowerCase();
+    }
+
+    private static void printAsyncReceipt(TransactionResponse receipt, Throwable error) {
+        System.out.println();
+        if (error != null) {
+            Throwable cause = error.getCause() != null ? error.getCause() : error;
+            System.err.println("--- Transaction Confirmation Failed ---");
+            System.err.println("Error: " + cause.getClass().getSimpleName() + " - " + cause.getMessage());
+            return;
+        }
+
+        if (receipt.getStatus() == TransactionStatus.SUCCESS) {
+            System.out.println("--- Transaction Successful ---");
+            System.out.println("Block: " + receipt.getBlockNumber());
+            System.out.println("Gas Used: " + receipt.getGasUsed());
+
+            if (!receipt.getReturnData().isEmpty()) {
+                byte[] bytes = receipt.getReturnData().toByteArray();
+                String returnHex = CryptoUtils.bytesToHex(bytes);
+                System.out.println("Return Data (Hex): 0x" + returnHex);
+                if (bytes.length == 32) {
+                    java.math.BigInteger bi = new java.math.BigInteger(1, bytes);
+                    System.out.println("Return Data (Uint256): " + bi);
+                } else {
+                    System.out.println("Return Data (Length: " + bytes.length + " bytes)");
+                }
+            } else {
+                System.out.println("Return Data: None");
+            }
+        } else {
+            System.err.println("--- Transaction Failed ---");
+            System.err.println("Status: " + receipt.getStatus());
+            System.err.println("Error: " + receipt.getErrorMessage());
+        }
+        System.out.print("Select an option: ");
+        System.out.flush();
     }
 
 

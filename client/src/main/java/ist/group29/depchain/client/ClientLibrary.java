@@ -46,7 +46,7 @@ public class ClientLibrary implements MessageListener {
     private volatile byte[] lastSentEnvelope;
 
     private final AtomicLong nonce = new AtomicLong(0);
-    // Use a separate counter for balance queries to avoid nonce collision with transactions
+    // Use a separate counter for read-only client queries so they never interfere with tx nonces.
     private final AtomicLong queryNonce = new AtomicLong(0);
 
 
@@ -130,16 +130,7 @@ public class ClientLibrary implements MessageListener {
         // Broadcast the signed transaction wrapped in an Envelope and store it for potential replay (for testing purposes)
         broadcastAndRemember(EnvelopeFactory.wrap(signedTx));
 
-        return future
-                .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
-                .whenComplete((resp, ex) -> {
-                    if (ex instanceof TimeoutException) {
-                        futures.remove(requestKey);
-                        pendingRequests.remove(requestKey);
-                        txHashToReqKey.remove(txHashKey);
-                        LOG.info("[Client] Transaction timed out, cleaned up: " + requestKey);
-                    }
-                });
+        return future;
     }
 
     public CompletableFuture<TransactionResponse> submitPreSignedTransaction(Transaction signedTx, long timeoutSeconds) {
@@ -156,16 +147,7 @@ public class ClientLibrary implements MessageListener {
 
         broadcastAndRemember(EnvelopeFactory.wrap(signedTx));
 
-        return future
-                .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
-                .whenComplete((resp, ex) -> {
-                    if (ex instanceof TimeoutException) {
-                        futures.remove(requestKey);
-                        pendingRequests.remove(requestKey);
-                        txHashToReqKey.remove(txHashKey);
-                        LOG.info("[Client] Pre-signed transaction timed out, cleaned up: " + requestKey);
-                    }
-                });
+        return future;
     }
 
     public CompletableFuture<NativeBalanceResponse> getNativeBalance(String address) {
