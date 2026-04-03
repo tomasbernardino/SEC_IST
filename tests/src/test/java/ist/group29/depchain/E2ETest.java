@@ -118,7 +118,7 @@ public class E2ETest {
         for (TestNode tn : cluster) {
             tn.linkManager.start();
         }
-        Thread.sleep(1500); 
+        Thread.sleep(1500);
 
         for (TestNode tn : cluster) {
             tn.consensus.start();
@@ -129,12 +129,12 @@ public class E2ETest {
         KeyPair keysToUse = useBadKeys ? CryptoUtils.generateRSAKeyPair() : clientKeys;
 
         Map<String, ProcessInfo> servers = new HashMap<>(processInfos);
-        servers.remove("client-1"); 
+        servers.remove("client-1");
 
         org.web3j.crypto.ECKeyPair ecKeys = CryptoUtils.createECKeyPair();
         client = new ClientLibrary(clientInfo, servers, keysToUse, publicKeys, ecKeys);
         client.start();
-        Thread.sleep(1000); 
+        Thread.sleep(1000);
     }
 
     @AfterEach
@@ -148,7 +148,6 @@ public class E2ETest {
         simulateByzantineLeader = false;
     }
 
-
     // Test 1: Normal Client Transaction Flow
 
     /**
@@ -161,11 +160,14 @@ public class E2ETest {
         bootCluster();
         bootClient(false);
 
-        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client.submitTransaction("", 0, "E2E_Tx_1".getBytes());
+        addAccountToAllNodes(client.getMyAddress(), BigInteger.valueOf(1_000_000), 0);
 
-        Assertions.assertDoesNotThrow(() -> {
-            future.get(5, TimeUnit.SECONDS);
-        }, "Client append should successfully reach quorum without timing out");
+        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client
+                .submitTransaction("", 0, "E2E_Tx_1".getBytes());
+
+        TransactionResponse receipt = future.get(5, TimeUnit.SECONDS);
+        Assertions.assertEquals(TransactionStatus.SUCCESS, receipt.getStatus(),
+                "Client transaction should successfully reach quorum with SUCCESS status");
     }
 
     // Test 2: Crash Fault Tolerance (f=1)
@@ -183,11 +185,14 @@ public class E2ETest {
 
         bootClient(false);
 
-        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client.submitTransaction("", 0, "Crash_Tolerance_Tx".getBytes());
+        addAccountToAllNodes(client.getMyAddress(), BigInteger.valueOf(1_000_000), 0);
 
-        Assertions.assertDoesNotThrow(() -> {
-            future.get(5, TimeUnit.SECONDS);
-        }, "Consensus should be reached despite 1 node crashing");
+        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client
+                .submitTransaction("", 0, "Crash_Tolerance_Tx".getBytes());
+
+        TransactionResponse receipt = future.get(5, TimeUnit.SECONDS);
+        Assertions.assertEquals(TransactionStatus.SUCCESS, receipt.getStatus(),
+                "Consensus should be reached and transaction successful despite 1 node crashing");
     }
 
     // Test 3: Byzantine Client (Invalid Signature)
@@ -207,7 +212,7 @@ public class E2ETest {
             future.get(2, TimeUnit.SECONDS);
         }, "Malicious request should fail validation and timeout entirely");
     }
-  
+
     // Test 4: Replay Attack Rejection
 
     /**
@@ -236,7 +241,7 @@ public class E2ETest {
         Assertions.assertEquals(
                 TransactionStatus.SUCCESS,
                 receipt.getStatus(),
-                "Original transfer should commit successfully");
+            "Original transfer should commit successfully");
 
         Assertions.assertTrue(client.replayLastMessage(), "Client should have a last serialized message to replay");
         // Wait to check if the replay was processed or rejected. Since the replay should be rejected due to nonce reuse, we expect balances and nonce to remain unchanged after a short wait.
@@ -256,10 +261,10 @@ public class E2ETest {
         public byte[] aggregateSignatureShares(byte[] data, java.util.List<byte[]> sharesData,
                 java.util.List<Integer> participantIds) throws Exception {
             byte[] realAgg = super.aggregateSignatureShares(data, sharesData, participantIds);
-    
+
             // Corrupt the signature
             if (realAgg.length > 0) {
-                realAgg[realAgg.length / 2] ^= 1; 
+                realAgg[realAgg.length / 2] ^= 1;
             }
             return realAgg;
         }

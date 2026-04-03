@@ -5,19 +5,11 @@ This repository contains the implementation of **DepChain**, a permissioned EVM-
 ## Project Structure
 
 The project is structured as a Maven multi-module project:
-- `common/`: Contains shared network abstractions, standard crypto utilities, and generated protobufs.
+- `common/`: Contains shared network abstractions, standard crypto utilities, bootstrapping utilities, and generated protobufs.
 - `server/`: Contains the core blockchain implementation including the HotStuff `Consensus` engine, EVM state management, and the `ISTCoin` contract.
 - `client/`: Contains the client library to build, sign (ECDSA), and submit Ethereum-formatted transactions to the network.
-
----
-
-## Compiling
-
-To compile all projects run the following command in the project's root directory:
-
-```bash
-mvn clean install
-```
+- `setup_config/`: Contains the generated network and blockchain identities, including keystores and addresses list.
+- `storage/`: Contains the persistent state of the blockchain the blocks json files.
 
 ---
 
@@ -36,6 +28,15 @@ Below is an example of parameters for 4 nodes and 2 clients:
 ```
 
 **Note:** This command automatically extracts the compiled `ISTCoin` EVM runtime bytecode and builds a `setup_config/` directory containing all configured network and blockchain identities. The generated nodes will have ids `[node-0, ..., node-3]` and clients `[client-0, client-1]`.
+---
+
+## Compiling
+
+To compile all projects run the following command in the project's root directory:
+
+```bash
+mvn clean install
+```
 
 ---
 
@@ -48,7 +49,7 @@ Below is an example of parameters for 4 nodes and 2 clients:
 To execute a blockchain node run the following command from the root directory:
 
 ```bash
-mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.App" -Dexec.args="<node id> <hosts file> <keys path> <password>"
+mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.App" -Dexec.args="<node id> <hosts file> <keys path> <password> [byzantineMode]"
 ```
 
 An example execution could be:
@@ -56,6 +57,28 @@ An example execution could be:
 ```bash
 mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.App" -Dexec.args="node-0 hosts.config setup_config/keys sec_project_keys"
 ```
+
+To run a Byzantine node, append the desired Byzantine mode to the end of the arguments. For example:
+
+```bash
+mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.App" -Dexec.args="node-0 hosts.config setup_config/keys sec_project_keys SILENT"
+```
+
+#### Byzantine Modes
+
+The following table explains each available byzantine mode:
+
+| Byzantine Mode | Description |
+|---|---|
+| `CORRECT` | Normal behavior (default). |
+| `SILENT` | Node stops responding to all consensus messages. |
+| `CRASH` | Node crashes after a delay. |
+| `CORRUPT_PROPOSAL` | Leader sends proposals with an invalid block. |
+| `CORRUPT_QC` | Leader corrupts QC signatures when aggregating votes. |
+| `CORRUPT_VOTE` | Replica sends votes with corrupted signature shares. |
+| `SLOW_NODE` | Leader delays all message processing. |
+| `SELECTIVE_VOTE` | Replica only votes in PREPARE, drops PRE_COMMIT and COMMIT votes. |
+| `REPLAY_LEADER` | Leader replays a previously committed block as a new proposal. |
 
 ### Client
 
@@ -73,10 +96,100 @@ mvn exec:java -pl client -Dexec.mainClass="ist.group29.depchain.client.App" -Dex
 
 ---
 
-## Executing the Test Suite
+## Test Suite
 
 To run the complete test suite across all modules:
 
 ```bash
 mvn test
 ```
+
+### Network Layer Tests
+
+| Test Title | Description | Expected Outcome |
+|---|---|---|
+| `testFairLossLink_NormalMessageSending` | Verify that a FairLossLink can successfully transmit and receive data over UDP. | Messages are delivered containing the expected payload and port. |
+| `testStubbornLink_RetransmissionAndCancel` | Verify that StubbornLink periodically resends a message until it is explicitly cancelled. | Messages are retransmitted until cancelled without increasing send count further. |
+| `testLinkManager_NormalMessageFlow` | Verify normal message flow utilizing the complete LinkManager stack. | Message is successfully delivered exactly once to the receiver. |
+| `testAuthenticatedPerfectLink_Deduplication` | Verify exactly-once delivery properties by sending duplicate messages to AuthenticatedPerfectLink. | Duplicate messages are detected and rejected. |
+| `testCrypto_BadHandshakeSignature` | Verify that AuthenticatedPerfectLink correctly rejects initial handshakes carrying invalid RSA signatures. | Session key is NOT established with a bad handshake signature. |
+| `testCrypto_BadDataHMAC` | Verify that AuthenticatedPerfectLink correctly rejects tampered data messages failing the HMAC check. | Corrupted data is dropped due to invalid HMAC catching the tampering. |
+| `testDependability_PeerCrashResilience` | Verify the system's behavior when a peer abruptly stops responding and crashes. | Sender LinkManager survives without throwing unhandled exceptions. |
+| `testDropMessageRecovery` | Simulate a lossy network that drops initial sends to verify eventual session establishment via retry mechanism. | Session establishes and data message is delivered exactly once gracefully. |
+
+### Consensus Tests
+
+| Test Title | Description | Expected Outcome |
+|---|---|---|
+| `testSafeNodeSafetyRuleRejectsConflict` | Verify that safeNode rejects a node that does not extend from lockedQC and is not fresher. | VOTE is NOT sent back to the leader. |
+| `testSafeNodeLivenessRuleAcceptsFresherQC` | Verify that safeNode accepts a conflicting proposal when its QC is fresher than the lockedQC (liveness rule). | Liveness rule passes and VOTE is sent back. |
+| `testOldViewProposal` | Verify that replica ignores old view proposals. | Replica ignores old view and no vote is sent. |
+| `testImposterLeader` | Verify that replica rejects prepare messages from nodes that are not the valid leader. | Replica rejects imposter and no vote is sent. |
+| `testForgedQC` | Ensure cryptographic validation fails for forged signatures on Quorum Certificates. | Rejects due to invalid signature. |
+| `testDuplicateVoteSpammer` | Malicious node sends QUORUM number of identical votes. | Leader should not reach quorum and not broadcast PRE-COMMIT. |
+| `testLeaderEquivocation` | Leader equivocation sends a second PREPARE for the same view. | Replica REJECTS the second proposal. |
+| `testDuplicateDecide` | Verify decide is strictly idempotent, ignoring duplicate DECIDE messages. | Command is executed only ONCE by the service. |
+| `testByzantineReplayOldViewVote` | Byzantine replica replays an old view vote in a new view. | The vote for the old view is ignored. |
+| `testCrossViewReplayDecide` | Cross-view replay of DECIDE message. | Replayed DECIDE is ignored because view differs. |
+| `testCrossViewReplayNewView` | Cross-view replay of NEW-VIEW message. | Replayed NEW-VIEW is ignored as view is past. |
+| `testReplayPreCommitSameView` | Replay of PRE-COMMIT message in the same view. | Replica accepts the first, ignores duplicate, avoiding second vote. |
+| `testReplayCommitSameView` | Replay of COMMIT message in the same view. | Replica accepts the first, ignores duplicate, avoiding second vote. |
+| `testHappyPathLeaderCompletesOneView` | Simulate a complete, happy-path view for a leader node. | DECIDE phase should be successfully reached. |
+| `testIncrementalExecution` | Verify incremental chronological execution of a branch. | Should incrementally execute all commands from the selected branch. |
+| `testOrphanedBranchNotExecuted` | Verifies executeCommittedBranch only walks the decided path, leaving orphans. | Should execute commands only on the committed branch. |
+| `testSkippedPhases` | Verify replica cannot decide without actually holding the block data. | Replica requires block data and ignores decide otherwise. |
+| `testLeaderWaitsForNMinusFNewViews` | Leader waits for exactly n-f NEW-VIEW messages before proposing and selects highest QC. | Proposal must be justified with highest-view QC from received messages. |
+| `testHotStuffNodeHashChaining` | Verify createLeaf produces deterministic hash chains and extendsFrom accurately checks ancestry. | Hash chains are deterministic and correctly verified. |
+| `testSyncRequestTriggeredOnMissingBlock` | Replica receives a proposal extending an unknown block. | Replica should send a SyncRequest to the leader to fetch missing blocks. |
+| `testSyncResponsePopulatesBlockStore` | A SyncResponse containing missing nodes is received. | The missing nodes are stored and correctly linked in the blockStore. |
+| `testInsufficientSignatureShares` | Validate behavior when insufficient votes are collected. | Leader should NOT reach quorum and NOT broadcast. |
+| `testFaultySignatureShare` | Simulated faulty aggregation failure due to one bad signature share. | No broadcast should occur as the combined aggregation failed. |
+| `testSelectiveDropPreCommitPreventsLockedQCUpdate` | Replica only votes in PREPARE, dropping PRE-COMMIT. | lockedQC remains at genesis and prepareQC is never updated. |
+| `testDropAllPrepareMessages` | Leader broadcasts PREPARE but all replicas drop it. | Replicas timeout and correctly trigger a view change with NEW-VIEW. |
+| `testDropAllDecideMessages` | Leader completes phases and broadcasts DECIDE, but replicas drop it. | Replicas timeout and send NEW-VIEW, while leader successfully committed. |
+| `testPartialCommitVoteDrop` | Partial vote drops resulting in only 2 of 3 COMMIT votes arriving at leader. | Leader cannot form commit QC and does NOT broadcast DECIDE. |
+| `testPacemakerRecovery` | Pacemaker handles partition timeout and recovers correctly. | Sends NEW-VIEW for the next view effectively. |
+| `testExponentialBackoffAndReset` | Verify pacemaker timeout backs off exponentially and resets on DECIDE. | Backoff correctly doubles per timeout and resets after DECIDE. |
+| `testProposalRetryFiresWhenMempoolFills` | Proposal retry fires when mempool successfully fills after an empty buildBlock. | Retry timer successfully schedules and triggers the delayed proposal. |
+| `testViewChangeAfterPreCommitUpdatesPrepareQC` | PRE-COMMIT updates prepareQC, ensuring the branch is preserved on view change. | NEW-VIEW carries updated prepareQC referencing the last valid proposal. |
+
+### Block Validation Tests
+
+| Test Title | Description | Expected Outcome |
+|---|---|---|
+| `testValidateBlockRejectsNonceGapInsideBlock` | Attempt to validate a block with non-sequential nonces for a sender. | Validation rejects the block containing the gap. |
+| `testValidateBlockRejectsDuplicateSenderNoncePair` | Attempt to validate a block with two different transactions using the same sender-nonce pair. | Validation rejects the block with duplicate nonces. |
+| `testValidateBlockRejectsDuplicateSignedTransaction` | Attempt to validate a block that includes the exact same transaction twice. | Validation rejects the block with duplicate transactions. |
+| `testValidateBlockRejectsWrongPreviousHash` | Attempt to validate a block where the previous hash field does not match state. | Validation rejects the block. |
+| `testValidateBlockRejectsTamperedBlockHash` | Attempt to validate a block where the stated block hash does not match its contents. | Validation correctly catches the tampering and rejects the block. |
+
+### Byzantine Client Validation Tests
+
+| Test Title | Description | Expected Outcome |
+|---|---|---|
+| `testGasValidationRejectsZeroGasPrice` | Attempt to submit a transaction with zero gas price. | Transaction is rejected for non-positive gas price. |
+| `testGasValidationRejectsNegativeGasPrice` | Attempt to submit a transaction with negative gas price. | Transaction is rejected for non-positive gas price. |
+| `testGasValidationRejectsZeroGasLimit` | Attempt to submit a transaction with zero gas limit. | Transaction is rejected for being out of gas (intrinsic gas). |
+| `testGasValidationRejectsIntrinsicGasTooLow` | Attempt to submit a transaction with gas limit lower than intrinsic gas cost. | Transaction is rejected for being out of gas. |
+| `testGasValidationRejectsBlockGasLimitExceeded` | Attempt to submit a transaction that exceeds block gas limit. | Transaction is rejected for exceeding block gas limit. |
+| `testByzantineClientRejectsUnknownSender` | Attempt to submit a transaction from a sender that doesn't exist. | Transaction is rejected due to sender not existing. |
+| `testByzantineClientRejectsInsufficientFunds` | Attempt to submit a transaction where sender lacks sufficient funds for gas + value. | Transaction is rejected for insufficient funds. |
+| `testByzantineClientRejectsUnknownRecipient` | Attempt to submit a transaction to an unknown recipient. | Transaction is rejected due to unknown recipient account. |
+| `testByzantineClientRejectsInvalidSignature` | Attempt to submit a transaction signed with incorrect keys. | Transaction is rejected for invalid signature. |
+| `testByzantineClientRejectsReplayNonceTooLow` | Attempt to submit a transaction using an old, already used nonce. | Transaction is rejected for nonce too low (replay protection). |
+
+### Frontrunning Tests
+
+| Test Title | Description | Expected Outcome |
+|---|---|---|
+| `testClassicApproveFrontrunning` | Simulates a frontrunning attack where an ERC20 `approve` value is changed, allowing the spender to drain both the old and new allowances. | The attacker successfully frontruns and steals combined allowance (150 tokens). |
+| `testDecreaseAllowanceFrontrunning` | Validates the mitigation for the approve frontrunning vulnerability by using `increaseAllowance` and `decreaseAllowance`. | The attacker can only spend the initial allowance (100 tokens), as the `decreaseAllowance` safely reverts afterwards. |
+
+### E2E Tests
+
+| Test Title | Description | Expected Outcome |
+|---|---|---|
+| `testNormalClientTransactionFlow` | Boot up 4 nodes and 1 client to verify that a normal transaction reaches consensus successfully. | Client transaction successfully reaches quorum with a SUCCESS status. |
+| `testCrashFaultTolerance` | Forcefully crash one consensus replica to test crash fault tolerance (f=1). | Consensus is reached and the transaction is successfully committed (SUCCESS status) despite 1 node crashing. |
+| `testByzantineClient_InvalidSignature` | A malicious client signs a transaction using an unregistered, random RSA key. | Request fails validation entirely resulting in a timeout. |
+| `testReplayAttackRejectedE2E` | Test replay attack rejection by submitting the exact same serialized message twice. | Replay request is rejected due to nonce reuse; balances unchanged. |
