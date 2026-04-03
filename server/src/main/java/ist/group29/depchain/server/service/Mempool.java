@@ -81,13 +81,11 @@ public class Mempool {
         return CryptoUtils.bytesToHex(CryptoUtils.keccakHash(tx.toByteArray()));
     }
 
-    // FIXME: Not used
     public synchronized void clear() {
         txsBySender.clear();
         seenHashes.clear();
     }
 
-    // FIXME: Not used
     public synchronized int size() {
         return seenHashes.size();
     }

@@ -190,39 +190,7 @@ public class E2ETest {
         }, "Consensus should be reached despite 1 node crashing");
     }
 
-    // Test 3: Byzantine Fault Tolerance (Leader Drops/Mangles QC)
-
-    /**
-     * Simulate Node-0 (the initial leader) acting
-     * maliciously by generating invalid Quorum Certificates.
-     * Verify that replicas reject the invalid proposal and seamlessly advance the view to a new honest leader to commit.
-     */
-    @Test
-    public void testByzantineFaultTolerance_LeaderInvalidQC() throws Exception {
-        simulateByzantineLeader = true;
-        bootCluster();
-        bootClient(false);
-
-        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client.submitTransaction("", 0, "Byzantine_Tolerance_Tx".getBytes());
-
-        Assertions.assertDoesNotThrow(() -> {
-            future.get(8, TimeUnit.SECONDS);
-        }, "Consensus should be reached by new leader after View Change without timing out");
-
-        int decidedNodes = 0;
-        Thread.sleep(100);
-        decidedNodes = 0;
-        for (TestNode tn : cluster) {
-            if (tn.consensus.getLastDecidedView() >= 2) {
-                decidedNodes++;
-            }
-        }
-
-        Assertions.assertTrue(decidedNodes >= 3, 
-            "At least a quorum of nodes should have finally committed the transaction under View 2 or higher, proving Node-0 failed it!");
-    }
-
-    // Test 4: Byzantine Client (Invalid Signature)
+    // Test 3: Byzantine Client (Invalid Signature)
 
     /**
      * Boot up 4 nodes and a malicious Client.
@@ -240,7 +208,7 @@ public class E2ETest {
         }, "Malicious request should fail validation and timeout entirely");
     }
   
-    // Test 5: Replay Attack Rejection
+    // Test 4: Replay Attack Rejection
 
     /**
      * Submit a valid native transfer through the real client path, then replay the

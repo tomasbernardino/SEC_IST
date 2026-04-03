@@ -183,7 +183,7 @@ public class ClientLibrary implements MessageListener {
             switch (env.getPayloadCase()) {
                 case TRANSACTION_RESPONSE -> handleTransactionResponse(senderId, env.getTransactionResponse());
                 case NATIVE_BALANCE_RESPONSE -> handleNativeBalanceResponse(senderId, env.getNativeBalanceResponse());
-                default -> LOG.warning("[Client] Unexpected envelope payload from " + senderId + ": " + env.getPayloadCase()); // FIXME: remove this log for a clearer client output 
+                // default -> LOG.warning("[Client] Unexpected envelope payload from " + senderId + ": " + env.getPayloadCase()); // Uncomment for debugging
             }
         } catch (InvalidProtocolBufferException e) {
             LOG.warning("[Client] Malformed envelope from " + senderId + ": " + e.getMessage());
@@ -196,7 +196,7 @@ public class ClientLibrary implements MessageListener {
         ByteBuffer hash = ByteBuffer.wrap(response.getTransactionHash().toByteArray());
         String requestKey = txHashToReqKey.get(hash);
         if (requestKey == null) {
-            LOG.warning("[Client] Received response for unknown transaction hash: " + hash); // FIXME: remove this log for a clearer client output 
+            //LOG.warning("[Client] Received response for unknown transaction hash: " + hash); // Uncomment for debugging
             return;
         }
 
@@ -222,7 +222,7 @@ public class ClientLibrary implements MessageListener {
         String requestId = response.getRequestId();
         Set<String> confirmers = pendingBalanceRequests.get(requestId);
         if (confirmers == null) {
-            LOG.warning("[Client] Received balance response for unknown request: " + requestId); // FIXME: remove this log for a clearer client output 
+            //LOG.warning("[Client] Received balance response for unknown request: " + requestId); // Uncomment for debugging
             return;
         }
 

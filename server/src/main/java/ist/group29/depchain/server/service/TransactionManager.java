@@ -3,6 +3,7 @@ package ist.group29.depchain.server.service;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -111,9 +112,53 @@ public class TransactionManager {
         if (block == null)
             return false;
 
+        // Proposed blocks must build directly on top of the current state.
+        if (block.getBlockNumber() != state.getBlockNumber() + 1) {
+            LOG.warning("[TransactionManager] Block number mismatch: expected " + (state.getBlockNumber() + 1)
+                    + ", got " + block.getBlockNumber());
+            return false;
+        }
+
+        // The parent hash must match the last committed block's hash to ensure continuity of the chain.
+        if (!block.getPreviousHash().equals(state.getBlockHash())) {
+            LOG.warning("[TransactionManager] Previous hash mismatch: expected " + state.getBlockHash()
+                    + ", got " + block.getPreviousHash());
+            return false;
+        }
+
+        // Recompute the content hash to detect tampering with the serialized block fields.
+        Block.Builder rebuilt = Block.newBuilder()
+                .addAllTransactions(block.getTransactionsList())
+                .setBlockNumber(block.getBlockNumber())
+                .setPreviousHash(block.getPreviousHash());
+        String expectedHash = CryptoUtils.bytesToHex(CryptoUtils.sha256(rebuilt.build().toByteArray()));
+        if (!expectedHash.equals(block.getBlockHash())) {
+            LOG.warning("[TransactionManager] Block hash mismatch: expected " + expectedHash
+                    + ", got " + block.getBlockHash());
+            return false;
+        }
+
         long blockGas = 0;
+        Set<String> seenTxHashes = new HashSet<>();
+        Set<String> seenSenderNonces = new HashSet<>();
+        Map<String, Long> expectedNonces = new HashMap<>();
 
         for (Transaction tx : block.getTransactionsList()) {
+            String txHash = CryptoUtils.bytesToHex(CryptoUtils.keccakHash(tx.toByteArray()));
+            // Should not be possible to include the exact same signed tx twice.
+            if (!seenTxHashes.add(txHash)) {
+                LOG.warning("[TransactionManager] Duplicate transaction hash in block: " + txHash);
+                return false;
+            }
+
+            String senderAddr = CryptoUtils.normalizeAddress(tx.getFrom());
+            String senderNonceKey = senderAddr + ":" + tx.getNonce();
+            // Sender/nonce pairs must be unique inside the block.
+            if (!seenSenderNonces.add(senderNonceKey)) {
+                LOG.warning("[TransactionManager] Duplicate sender/nonce pair in block: " + senderNonceKey);
+                return false;
+            }
+
             blockGas += tx.getGasLimit();
             if (blockGas > BLOCK_GAS_LIMIT) {
                 LOG.warning("[TransactionManager] Block exceeds gas limit: " + blockGas + " > " + BLOCK_GAS_LIMIT);
@@ -124,6 +169,22 @@ public class TransactionManager {
                 LOG.warning("[TransactionManager] Block contains invalid transaction from " + tx.getFrom());
                 return false;
             }
+
+            BlockchainAccount account = state.getAccount(senderAddr);
+            if (!(account instanceof EOA eoa)) {
+                LOG.warning("[TransactionManager] Block sender is not an EOA: " + senderAddr);
+                return false;
+            }
+
+            // Sender nonces must advance exactly as the block executes, without gaps.
+            long expectedNonce = expectedNonces.computeIfAbsent(senderAddr, key -> eoa.getNonce());
+            if (tx.getNonce() != expectedNonce) {
+                LOG.warning("[TransactionManager] Non-contiguous nonce in block for " + senderAddr
+                        + ": expected " + expectedNonce + ", got " + tx.getNonce());
+                return false;
+            }
+
+            expectedNonces.put(senderAddr, expectedNonce + 1);
         }
         return true;
     }
@@ -221,7 +282,7 @@ public class TransactionManager {
         if (account == null) {
             String msg = "sender account " + senderAddr + " does not exist";
             LOG.warning("[TransactionManager] Transaction rejected: " + msg);
-            return buildResponse(tx, TransactionStatus.FAILURE, msg); // FIXME: Or custom status
+            return buildResponse(tx, TransactionStatus.FAILURE, msg);
         }
 
         if (!(account instanceof EOA eoa)) {
