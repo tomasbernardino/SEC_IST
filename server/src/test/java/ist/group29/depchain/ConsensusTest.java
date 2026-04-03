@@ -1581,7 +1581,7 @@ class ConsensusTest {
 
                         org.mockito.Mockito.clearInvocations(mockLinkManager);
 
-                        // Wait for retry timer (timeoutMs/2 = 2s) to fire
+                        // Wait for retry timer
                         Thread.sleep(3000);
 
                         org.mockito.ArgumentCaptor<byte[]> captor = org.mockito.ArgumentCaptor.forClass(byte[].class);

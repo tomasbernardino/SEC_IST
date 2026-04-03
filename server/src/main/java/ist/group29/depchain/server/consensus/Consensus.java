@@ -42,7 +42,7 @@ public class Consensus {
     private static final Logger LOG = Logger.getLogger(Consensus.class.getName());
 
     private static final long INITIAL_TIMEOUT_MS = 4_000;
-    private static final long PROPOSAL_RETRY_MS = 1_000;
+    private static final long PROPOSAL_RETRY_MS = 2_000;
 
     protected final String selfId;
     protected final List<String> sortedNodeIds;
