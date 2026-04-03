@@ -103,6 +103,103 @@ mvn exec:java -pl client -Dexec.mainClass="ist.group29.depchain.client.App" -Dex
 
 ---
 
+## Demo for manual testing
+
+Here we show how you can run and test DepChain with 4 nodes and 2 clients:
+
+### 0. Suggested setup
+
+1. Generate static system information for 4 nodes and 2 clients
+
+2. Compile
+
+3. Start 4 nodes in separate terminals:
+
+```bash
+Terminal 1: mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.App" -Dexec.args="node-0 hosts.config setup_config/keys sec_project_keys"
+Terminal 2: mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.App" -Dexec.args="node-1 hosts.config setup_config/keys sec_project_keys"
+Terminal 3: mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.App" -Dexec.args="node-2 hosts.config setup_config/keys sec_project_keys"
+Terminal 4: mvn exec:java -pl server -Dexec.mainClass="ist.group29.depchain.server.App" -Dexec.args="node-3 hosts.config setup_config/keys sec_project_keys"
+```
+
+4. Open 2 clients in different terminals:
+
+```bash
+Terminal 5: mvn exec:java -pl client -Dexec.mainClass="ist.group29.depchain.client.App" -Dexec.args="client-0 hosts.config setup_config/keys sec_project_keys"
+Terminal 6: mvn exec:java -pl client -Dexec.mainClass="ist.group29.depchain.client.App" -Dexec.args="client-1 hosts.config setup_config/keys sec_project_keys"
+```
+
+The client automatically loads `setup_config/addresses.config`, so you can type `client-0` and `client-1` when prompted for an address, instead of full blockchain addresses.
+
+
+### 1. Check native DepCoin balances
+
+1. In `client-0`, choose menu option `1`.
+2. Press Enter to use the default address shown in brackets.
+3. Repeat in `client-1`.
+4. Confirm both clients can read their free native balance query successfully.
+Each of them should show a milion Depcoin units, since it is the default destribution and no gas fee is deducted.
+
+### 2. Transfer DepCoin between clients
+
+1. In `client-0`, choose menu option `2`.
+2. For the recipient, type `client-1`.
+3. Enter a transfer amount, for example `25`.
+4. Accept the default gas price and gas limit, or provide custom values.
+5. Wait for the transaction receipt.
+6. In both clients, use menu option `1` again and confirm:
+   - `client-0` balance decreased
+   - `client-1` balance increased
+
+    Note that a gas fee(at maximum the gas limit) is deducted
+
+### 3. Check the predeployed ISTCoin balance
+
+1. In `client-0`, choose menu option `3` for the ISTCoin menu.
+2. Choose option `1` (`Balance Of`).
+3. Press Enter to query your own address, or type `client-0`.
+4. Accept the default gas price and gas limit, or provide custom values.
+5. Wait and confirm the successful receipt and that the returnData shows the total amount of ISTCoins(100 million units + 2 zeros for the decimals) since those are minted to client-0 by default.
+
+    Note that a gas fee(at maximum the gas limit) is deducted
+
+### 4. Transfer ISTCoin between clients
+
+1. In `client-0`, choose menu option `3`.
+2. Choose option `2` (`Transfer`).
+3. For the recipient, type `client-1`.
+4. Enter an amount, for example `100`.
+5. Accept the default gas price and gas limit, or provide custom values.
+6. Wait for the successful receipt, should return 1 (true).
+7. Check balances again through menu option `3 -> 1` on both clients.
+8. Confirm `client-0` has fewer ISTCoin tokens and `client-1` has more comparing to the previous check.
+
+    Note that a gas fee(at maximum the gas limit) is deducted
+
+### 5. Test allowance flow
+
+1. In `client-0`, choose menu option `3`.
+2. Choose option `5` (`Increase Allowance`).
+3. Set the spender to `client-1`.
+4. Enter an allowance amount, for example `50`.
+5. Accept the default gas price and gas limit, or provide custom values.
+6. After the receipt, use option `7` (`Check Allowance`) with:
+   - owner: `client-0`
+   - spender: `client-1`
+7. Confirm the returned allowance matches the amount you set.
+
+You can also test option `6` (`Decrease Allowance`) afterwards to confirm the allowance update is reflected correctly.
+
+### 6. Test replay protection manually
+
+1. In `client-0`, submit a normal DepCoin transfer or ISTCoin operation and wait for its successful receipt.
+2. Immediately choose menu option `5` (`Replay Last Sent Message`).
+3. The client will rebroadcast the exact same serialized message bytes.
+4. Check the balances again and confirm the operation was not applied a second time.
+
+The replayed transaction should be rejected by nonce reuse, so the state should remain unchanged after the first successful execution.
+
+
 ## Test Suite
 
 To run the complete test suite across all modules:

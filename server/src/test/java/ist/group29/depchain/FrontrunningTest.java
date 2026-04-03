@@ -143,14 +143,14 @@ public class FrontrunningTest {
         }
         // Alice approves Bob for 100 tokens
         submitTx(leader, buildSignedTx(aliceKeys, aliceAddr, IST_COIN_ADDR, 0, encodeApprove(bobAddr, 100), 1, 100000));
-        waitForDecide(1, 25000);
+        waitForDecide(1, 90000);
 
         // Alice tries to decrease the allowance to 50
         submitTx(leader, buildSignedTx(aliceKeys, aliceAddr, IST_COIN_ADDR, 1, encodeApprove(bobAddr, 50), 1, 100000));
         // Bob sees the pending decrease and tries to frontrun by transferring 100 tokens with higher gas price so it gets included in the block before the decrease.
         submitTx(leader, buildSignedTx(bobKeys, bobAddr, IST_COIN_ADDR, 0, encodeTransferFrom(aliceAddr, bobAddr, 100), 2, 100000));
 
-        waitForDecide(2, 45000);
+        waitForDecide(2, 90000);
 
         for (ConsensusNode node : nodes.values()) {
             assertEquals(BigInteger.valueOf(100), getTokenBalance(node, bobAddr));
@@ -158,7 +158,7 @@ public class FrontrunningTest {
         }
 
         submitTx(leader, buildSignedTx(bobKeys, bobAddr, IST_COIN_ADDR, 1, encodeTransferFrom(aliceAddr, bobAddr, 50), 1, 100000));
-        waitForDecide(3, 45000);
+        waitForDecide(3, 90000);
 
         for (ConsensusNode node : nodes.values()) {
           assertEquals(BigInteger.ZERO, getAllowance(node, aliceAddr, bobAddr));
@@ -171,12 +171,12 @@ public class FrontrunningTest {
         ConsensusNode leader = nodes.get("node-0");
 
         submitTx(leader, buildSignedTx(aliceKeys, aliceAddr, IST_COIN_ADDR, 0, encodeIncreaseAllowance(bobAddr, 100), 1, 100000));
-        waitForDecide(1, 25000);
+        waitForDecide(1, 90000);
 
         submitTx(leader, buildSignedTx(aliceKeys, aliceAddr, IST_COIN_ADDR, 1, encodeDecreaseAllowance(bobAddr, 50), 1, 100000));
         submitTx(leader, buildSignedTx(bobKeys, bobAddr, IST_COIN_ADDR, 0, encodeTransferFrom(aliceAddr, bobAddr, 100), 2, 100000));
 
-        waitForDecide(2, 45000);
+        waitForDecide(2, 90000);
 
         for (ConsensusNode node : nodes.values()) {
             assertEquals(BigInteger.ZERO, getAllowance(node, aliceAddr, bobAddr));

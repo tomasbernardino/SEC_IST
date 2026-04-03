@@ -73,7 +73,7 @@ public class ClientLibrary implements MessageListener {
     }
 
 
-    private static final long DEFAULT_TIMEOUT_SECONDS = 60;
+    private static final long DEFAULT_TIMEOUT_SECONDS = 90;
 
     public CompletableFuture<TransactionResponse> submitTransaction(String to, long value, byte[] data) {
         long defaultGasLimit = (data == null || data.length == 0) ? 21000 : 100000;
