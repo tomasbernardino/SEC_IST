@@ -127,7 +127,7 @@ public class ClientLibrary implements MessageListener {
         pendingRequests.put(requestKey, ConcurrentHashMap.newKeySet());
         txHashToReqKey.put(txHashKey, requestKey);
 
-        // Broadcast the signed transaction wrapped in an Envelope and store it for potential replay
+        // Broadcast the signed transaction wrapped in an Envelope and store it for potential replay (for testing purposes)
         broadcastAndRemember(EnvelopeFactory.wrap(signedTx));
 
         return future
@@ -138,6 +138,32 @@ public class ClientLibrary implements MessageListener {
                         pendingRequests.remove(requestKey);
                         txHashToReqKey.remove(txHashKey);
                         LOG.info("[Client] Transaction timed out, cleaned up: " + requestKey);
+                    }
+                });
+    }
+
+    public CompletableFuture<TransactionResponse> submitPreSignedTransaction(Transaction signedTx, long timeoutSeconds) {
+        byte[] txBytes = signedTx.toByteArray();
+        byte[] txHash = CryptoUtils.keccakHash(txBytes);
+
+        CompletableFuture<TransactionResponse> future = new CompletableFuture<>();
+        String requestKey = signedTx.getFrom() + ":" + signedTx.getNonce();
+        ByteBuffer txHashKey = ByteBuffer.wrap(txHash);
+
+        futures.put(requestKey, future);
+        pendingRequests.put(requestKey, ConcurrentHashMap.newKeySet());
+        txHashToReqKey.put(txHashKey, requestKey);
+
+        broadcastAndRemember(EnvelopeFactory.wrap(signedTx));
+
+        return future
+                .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .whenComplete((resp, ex) -> {
+                    if (ex instanceof TimeoutException) {
+                        futures.remove(requestKey);
+                        pendingRequests.remove(requestKey);
+                        txHashToReqKey.remove(txHashKey);
+                        LOG.info("[Client] Pre-signed transaction timed out, cleaned up: " + requestKey);
                     }
                 });
     }

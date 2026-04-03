@@ -1,6 +1,7 @@
 package ist.group29.depchain;
 
 import java.net.InetAddress;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.util.ArrayList;
@@ -8,38 +9,42 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.math.BigInteger;
+
+import com.google.protobuf.ByteString;
+
+import org.apache.tuweni.bytes.Bytes;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
+import org.web3j.utils.Numeric;
 
 import ist.group29.depchain.client.ClientLibrary;
+import ist.group29.depchain.client.ClientMessages.Transaction;
 import ist.group29.depchain.client.ClientMessages.TransactionResponse;
 import ist.group29.depchain.client.ClientMessages.TransactionStatus;
+import ist.group29.depchain.common.crypto.ClientSignature;
 import ist.group29.depchain.common.crypto.CryptoUtils;
 import ist.group29.depchain.common.network.LinkManager;
 import ist.group29.depchain.common.network.ProcessInfo;
 import ist.group29.depchain.server.consensus.Consensus;
 import ist.group29.depchain.server.crypto.CryptoManager;
+import ist.group29.depchain.server.MessageRouter;
 import ist.group29.depchain.server.service.Service;
 import ist.group29.depchain.server.service.BlockchainState;
 import ist.group29.depchain.server.service.TransactionManager;
-import ist.group29.depchain.server.MessageRouter;
 import ist.group29.depchain.server.service.account.BlockchainAccount;
+import ist.group29.depchain.server.service.account.ContractAccount;
 import ist.group29.depchain.server.service.account.EOA;
 
 public class E2ETest {
     private static final int BASE_PORT = 12000;
+    private static final String IST_COIN_ADDR = "0x1111111111111111111111111111111111111111";
+    private static final Path GENESIS_PATH = Path.of("..", "storage", "genesis.json").normalize();
     private final List<String> nodeIds = List.of("node-0", "node-1", "node-2", "node-3");
     private final Map<String, ProcessInfo> processInfos = new HashMap<>();
     private final Map<String, KeyPair> keyPairs = new HashMap<>();
@@ -58,8 +63,10 @@ public class E2ETest {
         LinkManager linkManager;
         Consensus consensus;
         ScheduledExecutorService pacemaker;
+        boolean active = true;
 
         void shutdown() {
+            active = false;
             if (consensus != null)
                 consensus.shutdown();
             if (linkManager != null)
@@ -87,41 +94,46 @@ public class E2ETest {
     }
 
     private void bootCluster() throws Exception {
-        for (int i = 0; i < 4; i++) {
-            String id = nodeIds.get(i);
+        try {
+            for (int i = 0; i < 4; i++) {
+                String id = nodeIds.get(i);
 
-            Map<String, ProcessInfo> peers = new HashMap<>(processInfos);
-            peers.remove(id);
+                Map<String, ProcessInfo> peers = new HashMap<>(processInfos);
+                peers.remove(id);
 
-            TestNode tn = new TestNode();
-            tn.id = id;
-            tn.linkManager = new LinkManager(processInfos.get(id), peers, keyPairs.get(id), publicKeys);
+                TestNode tn = new TestNode();
+                tn.id = id;
+                tn.linkManager = new LinkManager(processInfos.get(id), peers, keyPairs.get(id), publicKeys);
 
-            BlockchainState state = new BlockchainState();
-            TransactionManager tm = new TransactionManager(state, tn.linkManager);
-            tn.service = new Service(state, tm);
+                BlockchainState state = BlockchainState.loadFromBlock(GENESIS_PATH);
+                TransactionManager tm = new TransactionManager(state, tn.linkManager);
+                tn.service = new Service(state, tm);
 
-            CryptoManager crypto;
-            if (simulateByzantineLeader && i == 0) {
-                crypto = new ByzantineCryptoManager(id, "../setup_config/keys");
-            } else {
-                crypto = new CryptoManager(id, "../setup_config/keys");
+                CryptoManager crypto;
+                if (simulateByzantineLeader && i == 0) {
+                    crypto = new ByzantineCryptoManager(id, "../setup_config/keys");
+                } else {
+                    crypto = new CryptoManager(id, "../setup_config/keys");
+                }
+
+                tn.pacemaker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+                tn.consensus = new Consensus(id, nodeIds, tn.linkManager, tn.service, tm, crypto, tn.pacemaker);
+
+                tn.linkManager.setMessageListener(new MessageRouter(tn.consensus, tm));
+                cluster.add(tn);
             }
 
-            tn.pacemaker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
-            tn.consensus = new Consensus(id, nodeIds, tn.linkManager, tn.service, tm, crypto, tn.pacemaker);
+            for (TestNode tn : cluster) {
+                tn.linkManager.start();
+            }
+            Thread.sleep(1500);
 
-            tn.linkManager.setMessageListener(new MessageRouter(tn.consensus, tm));
-            cluster.add(tn);
-        }
-
-        for (TestNode tn : cluster) {
-            tn.linkManager.start();
-        }
-        Thread.sleep(1500);
-
-        for (TestNode tn : cluster) {
-            tn.consensus.start();
+            for (TestNode tn : cluster) {
+                tn.consensus.start();
+            }
+        } catch (Exception e) {
+            teardown();
+            throw e;
         }
     }
 
@@ -160,14 +172,21 @@ public class E2ETest {
         bootCluster();
         bootClient(false);
 
-        addAccountToAllNodes(client.getMyAddress(), BigInteger.valueOf(1_000_000), 0);
+        String senderAddress = client.getMyAddress();
+        String recipientAddress = "0x2222222222222222222222222222222222222222";
+
+        addAccountToAllNodes(senderAddress, BigInteger.valueOf(1_000_000), 0);
+        addAccountToAllNodes(recipientAddress, BigInteger.ZERO, 0);
 
         CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client
-                .submitTransaction("", 0, "E2E_Tx_1".getBytes());
+            .submitTransaction(recipientAddress, 25, null, 1, 21_000);
 
         TransactionResponse receipt = future.get(5, TimeUnit.SECONDS);
         Assertions.assertEquals(TransactionStatus.SUCCESS, receipt.getStatus(),
-                "Client transaction should successfully reach quorum with SUCCESS status");
+            "Client transaction should successfully reach quorum with SUCCESS status");
+
+        waitForClusterBalance(recipientAddress, BigInteger.valueOf(25), 5);
+        waitForClusterNonce(senderAddress, 1, 5);
     }
 
     // Test 2: Crash Fault Tolerance (f=1)
@@ -185,32 +204,53 @@ public class E2ETest {
 
         bootClient(false);
 
-        addAccountToAllNodes(client.getMyAddress(), BigInteger.valueOf(1_000_000), 0);
+        String senderAddress = client.getMyAddress();
+        String recipientAddress = "0x3333333333333333333333333333333333333333";
+
+        addAccountToAllNodes(senderAddress, BigInteger.valueOf(1_000_000), 0);
+        addAccountToAllNodes(recipientAddress, BigInteger.ZERO, 0);
 
         CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client
-                .submitTransaction("", 0, "Crash_Tolerance_Tx".getBytes());
+            .submitTransaction(recipientAddress, 40, null, 1, 21_000);
 
         TransactionResponse receipt = future.get(5, TimeUnit.SECONDS);
         Assertions.assertEquals(TransactionStatus.SUCCESS, receipt.getStatus(),
-                "Consensus should be reached and transaction successful despite 1 node crashing");
+            "Consensus should be reached and transaction successful despite 1 node crashing");
+
+        waitForClusterBalance(recipientAddress, BigInteger.valueOf(40), 5);
+        waitForClusterNonce(senderAddress, 1, 5);
     }
 
     // Test 3: Byzantine Client (Invalid Signature)
 
     /**
-     * Boot up 4 nodes and a malicious Client.
-     * The malicious client signs a transaction using an unregistered, random RSA key.
+     * Boot up 4 nodes and a client
+     * Forge a blockchain transaction that claims the honest sender address
+     * but is signed with a different ECDSA key, verify that replicas reject it
+     * without mutating balances or nonce.
      */
     @Test
     public void testByzantineClient_InvalidSignature() throws Exception {
         bootCluster();
-        bootClient(true);
+        bootClient(false);
 
-        CompletableFuture<ist.group29.depchain.client.ClientMessages.TransactionResponse> future = client.submitTransaction("", 0, "Hacker_Tx_Fake_Sig".getBytes());
+        String claimedSender = client.getMyAddress();
+        String recipientAddress = "0x4444444444444444444444444444444444444444";
+        BigInteger initialBalance = BigInteger.valueOf(1_000_000);
 
-        Assertions.assertThrows(TimeoutException.class, () -> {
-            future.get(2, TimeUnit.SECONDS);
-        }, "Malicious request should fail validation and timeout entirely");
+        addAccountToAllNodes(claimedSender, initialBalance, 0);
+        addAccountToAllNodes(recipientAddress, BigInteger.ZERO, 0);
+
+        org.web3j.crypto.ECKeyPair attackerKeys = CryptoUtils.createECKeyPair();
+        Transaction forgedTx = buildSignedTx(attackerKeys, claimedSender, recipientAddress, 10, 0, 1, 21_000);
+
+        CompletableFuture<TransactionResponse> future = client.submitPreSignedTransaction(forgedTx, 5);
+        TransactionResponse receipt = future.get(5, TimeUnit.SECONDS);
+
+        Assertions.assertEquals(TransactionStatus.INVALID_SIGNATURE, receipt.getStatus(),
+                "Forged ECDSA transaction should be rejected with INVALID_SIGNATURE");
+        waitForClusterBalance(recipientAddress, BigInteger.ZERO, 5);
+        waitForClusterNonce(claimedSender, 0, 5);
     }
 
     // Test 4: Replay Attack Rejection
@@ -284,6 +324,9 @@ public class E2ETest {
         while (System.nanoTime() < deadline) {
             boolean allMatch = true;
             for (TestNode tn : cluster) {
+                if (!tn.active) {
+                    continue;
+                }
                 BlockchainAccount account = tn.service.getState().getAccount(normalized);
                 if (account == null || account.getBalance().compareTo(expectedBalance) != 0) {
                     allMatch = false;
@@ -307,6 +350,9 @@ public class E2ETest {
         while (System.nanoTime() < deadline) {
             boolean allMatch = true;
             for (TestNode tn : cluster) {
+                if (!tn.active) {
+                    continue;
+                }
                 BlockchainAccount account = tn.service.getState().getAccount(normalized);
                 if (!(account instanceof EOA eoa) || eoa.getNonce() != expectedNonce) {
                     allMatch = false;
@@ -322,4 +368,25 @@ public class E2ETest {
 
         Assertions.fail("Timed out waiting for nonce " + expectedNonce + " on " + address);
     }
+
+    private Transaction buildSignedTx(org.web3j.crypto.ECKeyPair signingKeys, String from, String to, long value,
+            long nonce, long gasPrice, long gasLimit) {
+        Transaction unsignedTx = Transaction.newBuilder()
+                .setFrom(from)
+                .setTo(to)
+                .setValue(value)
+                .setNonce(nonce)
+                .setGasPrice(gasPrice)
+                .setGasLimit(gasLimit)
+                .setData(ByteString.EMPTY)
+                .build();
+
+        ClientSignature sig = CryptoUtils.ecSign(signingKeys, unsignedTx.toByteArray());
+        return unsignedTx.toBuilder()
+                .setSigV(ByteString.copyFrom(sig.v()))
+                .setSigR(ByteString.copyFrom(sig.r()))
+                .setSigS(ByteString.copyFrom(sig.s()))
+                .build();
+    }
+
 }

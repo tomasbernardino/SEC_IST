@@ -139,6 +139,7 @@ mvn test
 | `testOrphanedBranchNotExecuted` | Verifies executeCommittedBranch only walks the decided path, leaving orphans. | Should execute commands only on the committed branch. |
 | `testSkippedPhases` | Verify replica cannot decide without actually holding the block data. | Replica requires block data and ignores decide otherwise. |
 | `testLeaderWaitsForNMinusFNewViews` | Leader waits for exactly n-f NEW-VIEW messages before proposing and selects highest QC. | Proposal must be justified with highest-view QC from received messages. |
+| `testDuplicateNewViewSenderDoesNotCountTwice` | Verify the leader counts only distinct NEW-VIEW senders toward the quorum needed to propose. | Duplicate NEW-VIEW messages from the same sender do not trigger PREPARE, another distinct sender is still required. |
 | `testHotStuffNodeHashChaining` | Verify createLeaf produces deterministic hash chains and extendsFrom accurately checks ancestry. | Hash chains are deterministic and correctly verified. |
 | `testSyncRequestTriggeredOnMissingBlock` | Replica receives a proposal extending an unknown block. | Replica should send a SyncRequest to the leader to fetch missing blocks. |
 | `testSyncResponsePopulatesBlockStore` | A SyncResponse containing missing nodes is received. | The missing nodes are stored and correctly linked in the blockStore. |
@@ -189,7 +190,7 @@ mvn test
 
 | Test Title | Description | Expected Outcome |
 |---|---|---|
-| `testNormalClientTransactionFlow` | Boot up 4 nodes and 1 client to verify that a normal transaction reaches consensus successfully. | Client transaction successfully reaches quorum with a SUCCESS status. |
-| `testCrashFaultTolerance` | Forcefully crash one consensus replica to test crash fault tolerance (f=1). | Consensus is reached and the transaction is successfully committed (SUCCESS status) despite 1 node crashing. |
-| `testByzantineClient_InvalidSignature` | A malicious client signs a transaction using an unregistered, random RSA key. | Request fails validation entirely resulting in a timeout. |
-| `testReplayAttackRejectedE2E` | Test replay attack rejection by submitting the exact same serialized message twice. | Replay request is rejected due to nonce reuse; balances unchanged. |
+| `testNormalClientTransactionFlow` | Boot up 4 nodes and 1 client and submit a valid native transfer through the real client path. | The transfer reaches quorum with `SUCCESS`, the recipient balance is updated on all nodes, and the sender nonce increments. |
+| `testCrashFaultTolerance` | Crash one replica and then submit a valid native transfer with the remaining 3-node quorum. | Consensus still succeeds, the surviving replicas converge to the same post-transfer balance, and the sender nonce increments once. |
+| `testByzantineClient_InvalidSignature` | Send a forged transaction that claims the real sender address but is signed with a different ECDSA key. | Nodes reject the transaction with `INVALID_SIGNATURE`, the recipient balance remains unchanged, and the sender nonce does not advance. |
+| `testReplayAttackRejectedE2E` | Submit a valid transfer and replay the exact same serialized client message afterwards. | Replay is rejected by nonce reuse semantics, so balances and sender nonce remain unchanged after the first commit. |

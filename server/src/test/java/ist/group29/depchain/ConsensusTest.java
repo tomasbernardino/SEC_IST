@@ -1022,6 +1022,49 @@ class ConsensusTest {
                         leader.shutdown();
                 }
 
+                @Test
+                void testDuplicateNewViewSenderDoesNotCountTwice() {
+                        lenient().when(mockTransactionManager.buildBlock()).thenReturn(DEFAULT_BLOCK);
+                        lenient().when(mockTransactionManager.validateBlock(any())).thenReturn(true);
+
+                        Consensus leader = new Consensus("node-0", NODE_IDS, mockLinkManager, service,
+                                        mockTransactionManager, mockCrypto, mockPacemaker);
+                        leader.start();
+
+                        org.mockito.Mockito.clearInvocations(mockLinkManager);
+
+                        // Leader already contributes its own NEW-VIEW on start().
+                        // Replaying NEW-VIEW from the same sender must not count twice toward the n-f quorum.
+                        feedNewView(leader, "node-1", 1);
+                        feedNewView(leader, "node-1", 1);
+
+                        org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.never())
+                                        .broadcast(org.mockito.ArgumentMatchers.any());
+
+                        // A second distinct sender should now complete the quorum and trigger PREPARE.
+                        feedNewView(leader, "node-2", 1);
+
+                        org.mockito.ArgumentCaptor<byte[]> captor = org.mockito.ArgumentCaptor.forClass(byte[].class);
+                        org.mockito.Mockito.verify(mockLinkManager, org.mockito.Mockito.atLeastOnce())
+                                        .broadcast(captor.capture());
+
+                        boolean hasPrepare = false;
+                        for (byte[] raw : captor.getAllValues()) {
+                                try {
+                                        Envelope env = Envelope.parseFrom(raw);
+                                        if (env.getConsensus().hasPrepare()) {
+                                                hasPrepare = true;
+                                                break;
+                                        }
+                                } catch (Exception ignored) {
+                                }
+                        }
+
+                        assertTrue(hasPrepare,
+                                        "Leader should only broadcast PREPARE after receiving NEW-VIEW from enough distinct senders");
+                        leader.shutdown();
+                }
+
         }
 
         @Nested
