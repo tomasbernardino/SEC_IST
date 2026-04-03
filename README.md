@@ -15,6 +15,10 @@ The project is structured as a Maven multi-module project:
 
 ## Generating static system information
 
+Server nodes are configured using a hosts file, in the Format: `<node-id> <ip-address> <port>`
+
+If the user wants to change the default configuration (4 nodes), or add more nodes, it can be done by editing the `hosts.config` file.
+
 In order to generate the required static system configuration artifacts (RSA node/client keystores, ECDSA client identities, `addresses.config`, and `genesis.json`), run the setup script available in the root directory:
 
 ```bash
@@ -28,6 +32,9 @@ Below is an example of parameters for 4 nodes and 2 clients:
 ```
 
 **Note:** This command automatically extracts the compiled `ISTCoin` EVM runtime bytecode and builds a `setup_config/` directory containing all configured network and blockchain identities. The generated nodes will have ids `[node-0, ..., node-3]` and clients `[client-0, client-1]`.
+
+**Note:** To generate more than 4 nodes, additional nodes must be added to the `hosts.config` file.
+
 ---
 
 ## Compiling

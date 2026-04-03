@@ -46,10 +46,7 @@ mkdir -p "$OUTPUT_DIR"
 # Build the project first (skip tests)
 echo "Building project..."
 cd "$PROJECT_DIR"
-mvn -q install -DskipTests 2>/dev/null || {
-    echo "Warning: Full build failed, trying to build just common + server..."
-    mvn -q install -pl common,server -DskipTests -am
-}
+mvn -q install -pl common,server -DskipTests -am
 
 # Run the unified setup tool
 echo ""
