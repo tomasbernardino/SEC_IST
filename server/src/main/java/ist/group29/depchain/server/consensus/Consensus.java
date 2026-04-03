@@ -34,8 +34,6 @@ import ist.group29.depchain.server.service.TransactionManager;
 
 /**
  * Basic HotStuff consensus engine - Algorithm 2 of the paper.
- *
- * Messages arrive via MessageRouter
  */
 public class Consensus {
 

@@ -130,7 +130,6 @@ public class ClientLibrary implements MessageListener {
         // Broadcast the signed transaction wrapped in an Envelope and store it for potential replay
         broadcastAndRemember(EnvelopeFactory.wrap(signedTx));
 
-        // Wrap with timeout + cleanup on expiry
         return future
                 .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
                 .whenComplete((resp, ex) -> {

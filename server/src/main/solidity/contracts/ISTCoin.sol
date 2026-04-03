@@ -7,21 +7,19 @@ import {ERC20} from "./ERC20/ERC20.sol";
 contract ISTCoin is ERC20 {
 
     constructor(uint256 initialSupply) ERC20("IST Coin", "IST") {
-        // Mint the initial supply to the deployer.
         _mint(msg.sender, initialSupply * 10 ** decimals());
     }
 
     /**
-     * @dev Overridden decimals to 2.
+     * Overridden decimals to 2.
      */
     function decimals() public view virtual override returns (uint8) {
         return 2;
     }
 
     /**
-     * @dev Standard approve function restricted to protect legacy clients.
+     * Standard approve function restricted to protect legacy clients.
      * Prevents transitioning from a non-zero allowance to another non-zero value.
-     * Clients are encouraged to use increaseAllowance and decreaseAllowance instead.
      */
     function approve(address spender, uint256 value) public virtual override returns (bool) {
         address owner = _msgSender();
@@ -35,7 +33,7 @@ contract ISTCoin is ERC20 {
     }
 
     /**
-     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     * Atomically increases the allowance granted to `spender` by the caller.
      */
     function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
         address owner = _msgSender();
@@ -44,7 +42,7 @@ contract ISTCoin is ERC20 {
     }
 
     /**
-     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     * Atomically decreases the allowance granted to `spender` by the caller.
      */
     function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
         address owner = _msgSender();

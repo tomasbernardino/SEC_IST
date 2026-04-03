@@ -200,11 +200,6 @@ public class ByzantineConsensus extends Consensus {
      *
      * Takes the transaction payload of a previously committed block and proposes
      * it again under a new view and a new nodeHash.
-     * Replicas won't recognize it as
-     * previously seen (different hash), so this tests whether the service layer
-     * detects and rejects duplicate transaction execution rather than the consensus
-     * layer. safeNode() may also reject it if the parent chain doesn't extend
-     * correctly from the current lockedQC.
      */
     private void triggerReplayProposal() {
         LOG.warning("[ByzantineConsensus] REPLAY_LEADER: attempting to replay a previously committed block in view "

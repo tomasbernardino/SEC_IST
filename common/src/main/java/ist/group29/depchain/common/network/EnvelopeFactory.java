@@ -9,8 +9,8 @@ import ist.group29.depchain.network.NetworkMessages.Envelope;
 
 /**
  * Static factory for wrapping application message
- * Senders call {@code EnvelopeFactory.wrap(msg)} before handing bytes to
- * {@link LinkManager}; the router unwraps on the receive side.
+ * Senders call EnvelopeFactory.wrap(msg) before handing bytes to
+ * LinkManager, the router unwraps on the receive side.
  */
 public final class EnvelopeFactory {
 

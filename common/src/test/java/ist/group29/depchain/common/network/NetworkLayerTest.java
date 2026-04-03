@@ -138,7 +138,6 @@ public class NetworkLayerTest {
         slA.send(dummyMsg, "Peer");
 
         // Wait long enough for initial send (at 0) plus 2 resends (at 500, 1000)
-        // Stubborn link RESEND_INTERVAL_MS = 500
         Thread.sleep(1200);
 
         Assertions.assertTrue(sendCount.get() >= 3, "Expected at least 3 transmissions (1 initial + 2 resends)");
@@ -255,8 +254,6 @@ public class NetworkLayerTest {
         AuthenticatedPerfectLink aplA = new AuthenticatedPerfectLink(slA, "NodeA", "NodeB", kpA, kpB.getPublic());
         AuthenticatedPerfectLink aplB = new AuthenticatedPerfectLink(slB, "NodeB", "NodeA", kpB, kpA.getPublic());
 
-        // Use a real DH key so the handshake is structurally valid —
-        // only the RSA signature is corrupted (signed with the wrong private key).
         KeyPair fakeDHKp = CryptoUtils.generateDHKeyPair();
         byte[] dhPubBytes = fakeDHKp.getPublic().getEncoded();
 

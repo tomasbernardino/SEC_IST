@@ -153,7 +153,7 @@ public class E2ETest {
 
     /**
      * Boot up 4 Consensus nodes and 1 Client.
-     * Verify that when the Client sends a valid signed append request,
+     * Verify that when the Client sends a valid signed transaction request,
      * the system successfully reaches consensus and replies with a quorum.
      */
     @Test
